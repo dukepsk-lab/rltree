@@ -1,0 +1,12 @@
+MetaTrader5
+pandas
+numpy
+scikit-learn
+tensorflow
+requests
+matplotlib
+gymnasium
+stable-baselines3
+
+yfinance
+optuna
