@@ -17,10 +17,10 @@ TP_PERCENT = 0.03
 
 def optimize_agent(trial):
     # Hyperparameters to search
-    learning_rate = trial.suggest_loguniform("learning_rate", 1e-5, 1e-2)
-    gamma = trial.suggest_uniform("gamma", 0.9, 0.999)
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
+    gamma = trial.suggest_float("gamma", 0.9, 0.999)
     n_steps = trial.suggest_categorical("n_steps", [1024, 2048, 4096, 8192])
-    ent_coef = trial.suggest_loguniform("ent_coef", 1e-8, 1e-2)
+    ent_coef = trial.suggest_float("ent_coef", 1e-8, 1e-2, log=True)
     
     # Fetch Data
     mt5.initialize()
