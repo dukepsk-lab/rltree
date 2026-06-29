@@ -130,7 +130,11 @@ def main():
     
     print("Training PPO Agent on GPU with Deep Architecture...")
     policy_kwargs = dict(net_arch=[256, 256])
-    model = PPO("MlpPolicy", env, verbose=1, learning_rate=0.0003, n_steps=2048, 
+    model = PPO("MlpPolicy", env, verbose=1, 
+                learning_rate=0.0033597434479013337, 
+                gamma=0.9517781177590708,
+                n_steps=4096, 
+                ent_coef=0.002157175081922516,
                 device='auto', policy_kwargs=policy_kwargs)
     
     model.learn(total_timesteps=TIMESTEPS)
