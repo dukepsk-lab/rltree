@@ -68,17 +68,24 @@ class TradingEnv(gym.Env):
             entry_price = open_price + spread_cost
             tp_price = entry_price + self.tp_price_diff
             
+            # Calculate dynamic lot size: 0.01 lot per $100 of equity
+            lot_size = (self.balance / 100.0) * 0.01
+            
             # Simulate inside the bar
             if high_price >= tp_price:
                 # Hit Take Profit!
-                profit = (tp_price - entry_price)
-                reward += profit
-                self.balance += (profit * 1.00) # $1 per $1 movement for 0.01 lot
+                price_diff = (tp_price - entry_price)
             else:
-                # Didn't hit TP, forcefully close at the end of the bar at Bid price (close_price)
-                profit = (close_price - entry_price)
-                reward += profit
-                self.balance += (profit * 1.00) # $1 per $1 movement for 0.01 lot
+                # Didn't hit TP, forcefully close at the end of the bar
+                price_diff = (close_price - entry_price)
+                
+            # Profit USD = Price Difference * 100 (Contract Size) * Lot Size
+            profit_usd = price_diff * 100.0 * lot_size
+            
+            # For RL agent, we can use the USD profit as reward (scales with account size)
+            # Or use normalized points. Let's use profit_usd.
+            reward += profit_usd
+            self.balance += profit_usd
         
         # Position is always flat at the end of the step
         self.position = 0

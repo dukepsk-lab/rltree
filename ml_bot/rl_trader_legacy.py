@@ -58,13 +58,28 @@ def open_trade(symbol, action_type, tp_price_diff):
         print(f"Symbol {symbol} not found.")
         return
         
+    account_info = mt5.account_info()
+    if account_info is None:
+        print("Failed to get account info")
+        return
+        
+    # Dynamic lot size: 0.01 lot per $100 of equity
+    equity = account_info.equity
+    lot_size = (equity / 100.0) * 0.01
+    lot_size = round(lot_size, 2)
+    
+    if lot_size < symbol_info.volume_min:
+        lot_size = symbol_info.volume_min
+    elif lot_size > symbol_info.volume_max:
+        lot_size = symbol_info.volume_max
+        
     price = mt5.symbol_info_tick(symbol).ask if action_type == "BUY" else mt5.symbol_info_tick(symbol).bid
     tp = price + tp_price_diff if action_type == "BUY" else price - tp_price_diff
     
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
-        "volume": 0.01,
+        "volume": lot_size,
         "type": mt5.ORDER_TYPE_BUY if action_type == "BUY" else mt5.ORDER_TYPE_SELL,
         "price": price,
         "sl": 0.0,
@@ -80,7 +95,7 @@ def open_trade(symbol, action_type, tp_price_diff):
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         print(f"Order send failed, retcode={result.retcode}")
     else:
-        print(f"Order sent successfully! Ticket: {result.order}")
+        print(f"Order sent successfully! Ticket: {result.order}, Volume: {lot_size}")
 
 def main():
     if not mt5.initialize():

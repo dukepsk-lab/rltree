@@ -51,54 +51,50 @@ def close_all_positions(symbol, magic):
             else:
                 print(f"Position {p.ticket} closed successfully.")
 
-def open_trade(symbol, action_type, tp_price_diff=0.01):
+def open_trade(symbol, action_type, tp_price_diff):
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
+        print(f"Symbol {symbol} not found.")
         return
-
-    ask = mt5.symbol_info_tick(symbol).ask
-    bid = mt5.symbol_info_tick(symbol).bid
+        
+    account_info = mt5.account_info()
+    if account_info is None:
+        print("Failed to get account info")
+        return
+        
+    # Dynamic lot size: 0.01 lot per $100 of equity
+    equity = account_info.equity
+    lot_size = (equity / 100.0) * 0.01
+    lot_size = round(lot_size, 2)
     
-    if action_type == "BUY":
-        price = ask
-        tp = price * (1 + tp_percent)
-        type_ = mt5.ORDER_TYPE_BUY
-    elif action_type == "SELL":
-        price = bid
-        tp = price * (1 - tp_percent)
-        type_ = mt5.ORDER_TYPE_SELL
-    else:
-        return
-
+    if lot_size < symbol_info.volume_min:
+        lot_size = symbol_info.volume_min
+    elif lot_size > symbol_info.volume_max:
+        lot_size = symbol_info.volume_max
+        
+    price = mt5.symbol_info_tick(symbol).ask if action_type == "BUY" else mt5.symbol_info_tick(symbol).bid
+    tp = price + tp_price_diff if action_type == "BUY" else price - tp_price_diff
+    
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
-        "volume": LOT_SIZE,
-        "type": type_,
+        "volume": lot_size,
+        "type": mt5.ORDER_TYPE_BUY if action_type == "BUY" else mt5.ORDER_TYPE_SELL,
         "price": price,
+        "sl": 0.0,
         "tp": tp,
         "deviation": 20,
-        "magic": MAGIC_NUMBER,
-        "comment": "RL PPO Agent",
+        "magic": 234000,
+        "comment": f"RL_Agent_{action_type}",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
-
+    
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"Order failed, retcode={result.retcode}")
+        print(f"Order send failed, retcode={result.retcode}")
     else:
-        print(f"Order placed successfully: {action_type} at {price}, TP: {tp}")
-
-def wait_for_new_bar(current_bar_time):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Waiting for the next D1 bar to open...")
-    while True:
-        rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, 1)
-        if rates is not None and len(rates) > 0:
-            latest_time = rates[0]['time']
-            if latest_time != current_bar_time:
-                return latest_time
-        time.sleep(60)
+        print(f"Order sent successfully! Ticket: {result.order}, Volume: {lot_size}")
 
 def main():
     init_mt5()
