@@ -32,12 +32,12 @@ def optimize_agent(trial):
     
     try:
         scaler = joblib.load('ml_bot/rl_scaler.save')
-    except:
+        scaled_data = scaler.transform(df[features])
+    except Exception as e:
         from sklearn.preprocessing import MinMaxScaler
         scaler = MinMaxScaler()
         scaler.fit(df[features])
-        
-    scaled_data = scaler.transform(df[features])
+        scaled_data = scaler.transform(df[features])
     scaled_df = pd.DataFrame(scaled_data, columns=[f"scaled_{f}" for f in features], index=df.index)
     final_df = pd.concat([scaled_df, df[['open', 'high', 'low', 'close', 'spread_cost']]], axis=1)
     
