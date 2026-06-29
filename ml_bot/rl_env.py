@@ -6,21 +6,24 @@ import pandas as pd
 class TradingEnv(gym.Env):
     """
     Custom Trading Environment for RL agent using Gymnasium.
+    Action 0: BUY
+    Action 1: SELL
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, df, window_size=20, tp_price_diff=3.00):
+    def __init__(self, df, window_size=20, tp_multiplier=1.0, sl_multiplier=1.0):
         super(TradingEnv, self).__init__()
         
         self.df = df.reset_index(drop=True)
         self.window_size = window_size
-        self.tp_price_diff = tp_price_diff
+        self.tp_multiplier = tp_multiplier
+        self.sl_multiplier = sl_multiplier
         
-        # Assume df contains 'open', 'high', 'low', 'close' for execution
-        # and feature columns prefixed with 'feat_' or just use all columns except OHLCV as features
+        # We need atr_14 in the features, but also in the raw data
+        # feature_cols are all columns except non-features
         self.feature_cols = [c for c in df.columns if c not in ['open', 'high', 'low', 'close', 'tick_volume', 'time', 'target']]
         
-        # Define action space: 0 = Flat/Close, 1 = Buy (Long)
+        # Define action space: 0 = Buy, 1 = Sell
         self.action_space = spaces.Discrete(2)
         
         # Define observation space
@@ -32,7 +35,7 @@ class TradingEnv(gym.Env):
         self.current_step = self.window_size
         self.end_step = len(self.df) - 1
         
-        self.position = 0 # 0 = flat, 1 = long
+        self.position = 0
         self.entry_price = 0.0
         
         self.balance = 10000.0
@@ -57,41 +60,55 @@ class TradingEnv(gym.Env):
         current_bar = self.df.iloc[self.current_step]
         open_price = current_bar['open']
         high_price = current_bar['high']
+        low_price = current_bar['low']
         close_price = current_bar['close']
+        atr = current_bar.get('atr_14', 1.0)
         
         reward = 0
         done = False
         
-        # 0 = Flat/Skip, 1 = Buy at Open
-        if action == 1:
-            spread_cost = current_bar['spread_cost'] if 'spread_cost' in current_bar else 0
+        # Fixed simulated spread representing 01:00 execution (15 points = $0.15 for Gold)
+        spread_cost = 0.15 
+        
+        lot_size = (self.balance / 100.0) * 0.01
+        lot_size = min(lot_size, 10.0)
+        
+        # Capped dynamic TP and SL
+        tp_dist = min(atr * self.tp_multiplier, 3.00)
+        sl_dist = atr * self.sl_multiplier
+        
+        if action == 0: # BUY
             entry_price = open_price + spread_cost
-            tp_price = entry_price + self.tp_price_diff
+            tp_price = entry_price + tp_dist
+            sl_price = entry_price - sl_dist
             
-            # Calculate dynamic lot size: 0.01 lot per $100 of equity
-            lot_size = (self.balance / 100.0) * 0.01
-            lot_size = min(lot_size, 10.0) # Cap max lot size at 10.0
-            
-            # Simulate inside the bar
-            if high_price >= tp_price:
-                # Hit Take Profit!
-                price_diff = (tp_price - entry_price)
+            if low_price <= sl_price:
+                price_diff = -sl_dist
+            elif high_price >= tp_price:
+                price_diff = tp_dist
             else:
-                # Didn't hit TP, forcefully close at the end of the bar
                 price_diff = (close_price - entry_price)
                 
-            # Profit USD = Price Difference * 100 (Contract Size) * Lot Size
             profit_usd = price_diff * 100.0 * lot_size
-            
-            # For RL agent, we can use the USD profit as reward (scales with account size)
-            # Or use normalized points. Let's use profit_usd.
             reward += profit_usd
             self.balance += profit_usd
-        
-        # Position is always flat at the end of the step
-        self.position = 0
-        self.entry_price = 0
-
+            
+        elif action == 1: # SELL
+            entry_price = open_price - spread_cost
+            tp_price = entry_price - tp_dist
+            sl_price = entry_price + sl_dist
+            
+            if high_price >= sl_price:
+                price_diff = -sl_dist
+            elif low_price <= tp_price:
+                price_diff = tp_dist
+            else:
+                price_diff = (entry_price - close_price)
+                
+            profit_usd = price_diff * 100.0 * lot_size
+            reward += profit_usd
+            self.balance += profit_usd
+            
         self.current_step += 1
         
         if self.current_step >= self.end_step:
@@ -105,4 +122,4 @@ class TradingEnv(gym.Env):
         return self._get_obs(), reward, done, False, {"balance": self.balance}
 
     def render(self):
-        print(f"Step: {self.current_step}, Balance: {self.balance:.2f}, Position: {self.position}")
+        pass

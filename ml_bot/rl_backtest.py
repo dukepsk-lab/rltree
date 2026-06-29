@@ -12,7 +12,8 @@ SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_D1
 DATA_LIMIT = 5000
 WINDOW_SIZE = 20
-TP_PRICE_DIFF = 3.00
+TP_MULTIPLIER = 1.0
+SL_MULTIPLIER = 2.0
 
 def main():
     if not mt5.initialize():
@@ -27,7 +28,7 @@ def main():
         return
         
     df = add_features(df).dropna()
-    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y']
+    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14']
     
     # Load Scaler
     try:
@@ -38,7 +39,7 @@ def main():
         
     scaled_data = scaler.transform(df[features])
     scaled_df = pd.DataFrame(scaled_data, columns=[f"scaled_{f}" for f in features], index=df.index)
-    final_df = pd.concat([scaled_df, df[['open', 'high', 'low', 'close', 'spread_cost']]], axis=1)
+    final_df = pd.concat([scaled_df, df[['open', 'high', 'low', 'close', 'spread_cost', 'atr_14']]], axis=1)
     
     # We will test on the last 20% of data
     split = int(len(final_df) * 0.8)
@@ -54,7 +55,7 @@ def main():
         return
         
     # Create test env
-    env = DummyVecEnv([lambda: TradingEnv(test_df, WINDOW_SIZE, tp_price_diff=TP_PRICE_DIFF)])
+    env = DummyVecEnv([lambda: TradingEnv(test_df, WINDOW_SIZE, TP_MULTIPLIER, SL_MULTIPLIER)])
     obs = env.reset()
     
     # DummyVecEnv wraps returns in arrays
@@ -89,8 +90,8 @@ def main():
     plt.xlabel("Time Step (Test Set)")
     plt.ylabel("Account Balance ($)")
     plt.grid(True)
-    plt.legend()
-    plt.show()
+    plt.savefig('backtest_result.png')
+    print("Backtest plot saved to backtest_result.png")
 
 if __name__ == "__main__":
     main()

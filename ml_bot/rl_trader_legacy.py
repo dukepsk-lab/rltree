@@ -9,7 +9,8 @@ from stable_baselines3 import PPO
 # --- Configuration ---
 SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_D1
-TP_PRICE_DIFF = 3.00
+TP_MULTIPLIER = 1.0
+SL_MULTIPLIER = 2.0
 WINDOW_SIZE = 20
 
 def fetch_data(symbol, timeframe, n_bars):
@@ -52,7 +53,7 @@ def add_features(df):
     df['linreg_20'] = df['close'].rolling(window=window).apply(slope_func, raw=True)
     return df
 
-def open_trade(symbol, action_type, tp_price_diff):
+def open_trade(symbol, action_type, tp_multiplier, sl_multiplier):
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         print(f"Symbol {symbol} not found.")
@@ -62,6 +63,21 @@ def open_trade(symbol, action_type, tp_price_diff):
     if account_info is None:
         print("Failed to get account info")
         return
+        
+    # Get recent ATR
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_D1, 0, 15)
+    import pandas as pd
+    import numpy as np
+    df = pd.DataFrame(rates)
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().iloc[-1]
+    if pd.isna(atr): atr = 1.0
+    
+    tp_dist = min(atr * tp_multiplier, 3.00)
+    sl_dist = atr * sl_multiplier
         
     # Dynamic lot size: 0.01 lot per $100 of equity
     equity = account_info.equity
@@ -75,15 +91,23 @@ def open_trade(symbol, action_type, tp_price_diff):
         lot_size = symbol_info.volume_max
         
     price = mt5.symbol_info_tick(symbol).ask if action_type == "BUY" else mt5.symbol_info_tick(symbol).bid
-    tp = price + tp_price_diff if action_type == "BUY" else price - tp_price_diff
+    
+    if action_type == "BUY":
+        tp = price + tp_dist
+        sl = price - sl_dist
+        order_type = mt5.ORDER_TYPE_BUY
+    else:
+        tp = price - tp_dist
+        sl = price + sl_dist
+        order_type = mt5.ORDER_TYPE_SELL
     
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
         "volume": lot_size,
-        "type": mt5.ORDER_TYPE_BUY if action_type == "BUY" else mt5.ORDER_TYPE_SELL,
+        "type": order_type,
         "price": price,
-        "sl": 0.0,
+        "sl": sl,
         "tp": tp,
         "deviation": 20,
         "magic": 234000,
@@ -96,7 +120,7 @@ def open_trade(symbol, action_type, tp_price_diff):
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         print(f"Order send failed, retcode={result.retcode}")
     else:
-        print(f"Order sent successfully! Ticket: {result.order}, Volume: {lot_size}")
+        print(f"Order sent successfully! Ticket: {result.order}, Volume: {lot_size}, TP_dist: {tp_dist:.2f}, SL_dist: {sl_dist:.2f}")
 
 def main():
     if not mt5.initialize():
@@ -120,7 +144,7 @@ def main():
     if expected_shape == 13:
         features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14']
     elif expected_shape == 14:
-        features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20']
+        features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'atr_14']
     else:
         print(f"Error: Unknown model shape ({expected_shape}). Expected 13 or 14 for legacy model.")
         return
