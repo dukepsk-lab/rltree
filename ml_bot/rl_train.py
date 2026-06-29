@@ -15,7 +15,7 @@ TIMEFRAME = mt5.TIMEFRAME_D1
 DATA_LIMIT = 5000
 WINDOW_SIZE = 20
 TP_PRICE_DIFF = 3.00 # $3.00 price movement for XAUUSD
-TIMESTEPS = 200000
+TIMESTEPS = 1000000
 
 def init_mt5():
     if not mt5.initialize():
