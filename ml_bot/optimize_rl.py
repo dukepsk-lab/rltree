@@ -50,7 +50,7 @@ def optimize_agent(trial):
     test_env = DummyVecEnv([lambda: TradingEnv(test_df, WINDOW_SIZE, tp_price_diff=TP_PRICE_DIFF)])
     
     model = PPO("MlpPolicy", train_env, verbose=0, learning_rate=learning_rate, gamma=gamma, 
-                n_steps=n_steps, ent_coef=ent_coef, device='cuda')
+                n_steps=n_steps, ent_coef=ent_coef, device='auto')
     
     # Quick train for optimization
     model.learn(total_timesteps=15000)
