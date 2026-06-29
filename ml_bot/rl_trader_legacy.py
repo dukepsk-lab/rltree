@@ -9,7 +9,7 @@ from stable_baselines3 import PPO
 # --- Configuration ---
 SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_D1
-TP_PERCENT = 0.03
+TP_PRICE_DIFF = 3.00
 WINDOW_SIZE = 20
 
 def fetch_data(symbol, timeframe, n_bars):
@@ -52,14 +52,14 @@ def add_features(df):
     df['linreg_20'] = df['close'].rolling(window=window).apply(slope_func, raw=True)
     return df
 
-def open_trade(symbol, action_type, tp_percent):
+def open_trade(symbol, action_type, tp_price_diff):
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         print(f"Symbol {symbol} not found.")
         return
         
     price = mt5.symbol_info_tick(symbol).ask if action_type == "BUY" else mt5.symbol_info_tick(symbol).bid
-    tp = price + (price * tp_percent) if action_type == "BUY" else price - (price * tp_percent)
+    tp = price + tp_price_diff if action_type == "BUY" else price - tp_price_diff
     
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -132,7 +132,7 @@ def main():
             
             if action_idx == 1:
                 print("RL Agent decided to: BUY")
-                open_trade(SYMBOL, "BUY", tp_percent=TP_PERCENT)
+                open_trade(SYMBOL, "BUY", tp_price_diff=TP_PRICE_DIFF)
             else:
                 print("RL Agent decided to: HOLD/FLAT")
                 

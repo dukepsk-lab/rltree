@@ -11,7 +11,7 @@ SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_D1
 DATA_LIMIT = 5000     # Historical bars for backtest
 SEQUENCE_LENGTH = 20
-TP_PERCENT = 0.01      # 1% Take Profit
+TP_PRICE_DIFF = 0.01      # 1% Take Profit
 INITIAL_CAPITAL = 10000.0
 
 # --- 1. Initialize MT5 ---
@@ -175,7 +175,7 @@ def main():
         
         if pred > 0.505: # BUY SIGNAL
             traded = True
-            tp_price = entry_price * (1 + TP_PERCENT)
+            tp_price = entry_price * (1 + TP_PRICE_DIFF)
             
             # Check if high hits TP
             if high_price >= tp_price:

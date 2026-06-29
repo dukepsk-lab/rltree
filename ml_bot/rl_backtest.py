@@ -12,7 +12,7 @@ SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_D1
 DATA_LIMIT = 5000
 WINDOW_SIZE = 20
-TP_PERCENT = 0.01
+TP_PRICE_DIFF = 3.00
 
 def main():
     if not mt5.initialize():
@@ -54,7 +54,7 @@ def main():
         return
         
     # Create test env
-    env = DummyVecEnv([lambda: TradingEnv(test_df, WINDOW_SIZE, TP_PERCENT)])
+    env = DummyVecEnv([lambda: TradingEnv(test_df, WINDOW_SIZE, tp_price_diff=TP_PRICE_DIFF)])
     obs = env.reset()
     
     # DummyVecEnv wraps returns in arrays

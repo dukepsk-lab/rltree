@@ -13,7 +13,7 @@ SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_D1
 DATA_LIMIT = 5000
 WINDOW_SIZE = 20
-TP_PERCENT = 0.03
+TP_PRICE_DIFF = 3.00
 
 def optimize_agent(trial):
     # Hyperparameters to search
@@ -46,8 +46,8 @@ def optimize_agent(trial):
     train_df = final_df.iloc[:split]
     test_df = final_df.iloc[split:]
     
-    train_env = DummyVecEnv([lambda: TradingEnv(train_df, WINDOW_SIZE, TP_PERCENT)])
-    test_env = DummyVecEnv([lambda: TradingEnv(test_df, WINDOW_SIZE, TP_PERCENT)])
+    train_env = DummyVecEnv([lambda: TradingEnv(train_df, WINDOW_SIZE, tp_price_diff=TP_PRICE_DIFF)])
+    test_env = DummyVecEnv([lambda: TradingEnv(test_df, WINDOW_SIZE, tp_price_diff=TP_PRICE_DIFF)])
     
     model = PPO("MlpPolicy", train_env, verbose=0, learning_rate=learning_rate, gamma=gamma, 
                 n_steps=n_steps, ent_coef=ent_coef, device='cuda')

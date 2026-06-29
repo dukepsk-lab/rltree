@@ -187,7 +187,7 @@ def close_all_positions(symbol, magic):
             else:
                 print(f"Position {p.ticket} closed successfully at bar end.")
 
-def open_trade(symbol, action, tp_percent=0.01):
+def open_trade(symbol, action, tp_price_diff=0.01):
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         return
@@ -297,7 +297,7 @@ def main():
         if prediction > 0.505:
             print("Strong Up trend detected -> BUY")
             if is_spread_ok(SYMBOL):
-                open_trade(SYMBOL, "BUY", tp_percent=0.01)
+                open_trade(SYMBOL, "BUY", tp_price_diff=0.01)
             else:
                 print("Spread too high, skipped.")
                 

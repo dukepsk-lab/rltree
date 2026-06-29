@@ -14,7 +14,7 @@ SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_H8
 DATA_LIMIT = 5000
 WINDOW_SIZE = 20
-TP_PERCENT = 0.03 # Default to 3% as analyzed
+TP_PRICE_DIFF = 3.00 # $3.00 price movement for XAUUSD
 TIMESTEPS = 200000
 
 def init_mt5():
@@ -126,7 +126,7 @@ def main():
     rl_df, scaler = prepare_rl_data(df)
     joblib.dump(scaler, 'ml_bot/rl_scaler_h8.save')
     
-    env = DummyVecEnv([lambda: TradingEnv(rl_df, WINDOW_SIZE, TP_PERCENT)])
+    env = DummyVecEnv([lambda: TradingEnv(rl_df, WINDOW_SIZE, tp_price_diff=TP_PRICE_DIFF)])
     
     print("Training PPO Agent on GPU with Deep Architecture...")
     policy_kwargs = dict(net_arch=[256, 256])

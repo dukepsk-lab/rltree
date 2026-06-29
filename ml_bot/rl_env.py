@@ -9,12 +9,12 @@ class TradingEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, df, window_size=20, tp_percent=0.01):
+    def __init__(self, df, window_size=20, tp_price_diff=3.00):
         super(TradingEnv, self).__init__()
         
         self.df = df.reset_index(drop=True)
         self.window_size = window_size
-        self.tp_percent = tp_percent
+        self.tp_price_diff = tp_price_diff
         
         # Assume df contains 'open', 'high', 'low', 'close' for execution
         # and feature columns prefixed with 'feat_' or just use all columns except OHLCV as features
@@ -66,19 +66,19 @@ class TradingEnv(gym.Env):
         if action == 1:
             spread_cost = current_bar['spread_cost'] if 'spread_cost' in current_bar else 0
             entry_price = open_price + spread_cost
-            tp_price = entry_price * (1 + self.tp_percent)
+            tp_price = entry_price + self.tp_price_diff
             
             # Simulate inside the bar
             if high_price >= tp_price:
                 # Hit Take Profit!
-                profit = (tp_price - entry_price) / entry_price
-                reward += profit * 100
-                self.balance *= (1 + profit)
+                profit = (tp_price - entry_price)
+                reward += profit
+                self.balance += (profit * 1.00) # $1 per $1 movement for 0.01 lot
             else:
                 # Didn't hit TP, forcefully close at the end of the bar at Bid price (close_price)
-                profit = (close_price - entry_price) / entry_price
-                reward += profit * 100
-                self.balance *= (1 + profit)
+                profit = (close_price - entry_price)
+                reward += profit
+                self.balance += (profit * 1.00) # $1 per $1 movement for 0.01 lot
         
         # Position is always flat at the end of the step
         self.position = 0

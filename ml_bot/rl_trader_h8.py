@@ -13,7 +13,7 @@ TIMEFRAME = mt5.TIMEFRAME_H8
 MAGIC_NUMBER = 999999
 LOT_SIZE = 0.01
 WINDOW_SIZE = 20
-TP_PERCENT = 0.01
+TP_PRICE_DIFF = 0.01
 
 def init_mt5():
     if not mt5.initialize():
@@ -51,7 +51,7 @@ def close_all_positions(symbol, magic):
             else:
                 print(f"Position {p.ticket} closed successfully.")
 
-def open_trade(symbol, action_type, tp_percent=0.01):
+def open_trade(symbol, action_type, tp_price_diff=0.01):
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         return
@@ -136,7 +136,7 @@ def main():
         
         if action_idx == 1:
             print("RL Agent decided to: BUY")
-            open_trade(SYMBOL, "BUY", tp_percent=TP_PERCENT)
+            open_trade(SYMBOL, "BUY", tp_price_diff=TP_PRICE_DIFF)
         else:
             print("RL Agent decided to: HOLD/FLAT")
             

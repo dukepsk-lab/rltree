@@ -47,7 +47,7 @@ def add_features(df):
     df['linreg_20'] = df['close'].rolling(window=window).apply(slope_func, raw=True)
     return df
 
-def run_backtest(symbol, timeframe, data_limit, window_size, tp_percent, model_path, scaler_path):
+def run_backtest(symbol, timeframe, data_limit, window_size, tp_price_diff, model_path, scaler_path):
     df = fetch_data(symbol, timeframe, data_limit)
     df = add_features(df).dropna()
     features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20']
@@ -61,7 +61,7 @@ def run_backtest(symbol, timeframe, data_limit, window_size, tp_percent, model_p
     test_df = final_df.iloc[split:].copy()
     
     model = PPO.load(model_path)
-    env = DummyVecEnv([lambda: TradingEnv(test_df, window_size, tp_percent)])
+    env = DummyVecEnv([lambda: TradingEnv(test_df, window_size, tp_price_diff)])
     obs = env.reset()
     
     dones = [False]
