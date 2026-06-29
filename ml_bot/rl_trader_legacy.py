@@ -90,21 +90,40 @@ def main():
     print(f"Starting Legacy RL Live Trading Agent for {SYMBOL}...")
     try:
         model = PPO.load("ml_bot/rl_model")
-        scaler = joblib.load("ml_bot/rl_scaler_legacy.save")
-        print("Legacy Model and Scaler loaded successfully.")
+        expected_shape = model.policy.observation_space.shape[1]
+        print(f"Legacy Model loaded successfully. Expected features: {expected_shape}")
     except Exception as e:
-        print(f"Failed to load legacy model/scaler: {e}")
+        print(f"Failed to load legacy model: {e}")
         return
+        
+    # Fit scaler dynamically on historical data to avoid scaler version mismatches
+    print("Fitting dynamic scaler on historical data...")
+    df_hist = fetch_data(SYMBOL, TIMEFRAME, 5000)
+    df_hist = add_features(df_hist).dropna()
+    
+    if expected_shape == 13:
+        features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14']
+    elif expected_shape == 14:
+        features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20']
+    else:
+        print(f"Error: Unknown model shape ({expected_shape}). Expected 13 or 14 for legacy model.")
+        return
+        
+    from sklearn.preprocessing import MinMaxScaler
+    scaler = MinMaxScaler()
+    scaler.fit(df_hist[features])
+    print("Dynamic Scaler fitted successfully.")
         
     while True:
         try:
             df = fetch_data(SYMBOL, TIMEFRAME, WINDOW_SIZE + 40)
             df = add_features(df).dropna()
             
-            features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20']
             scaled_data = scaler.transform(df[features])
+            scaled_df = pd.DataFrame(scaled_data, columns=[f"scaled_{f}" for f in features], index=df.index)
+            final_df = pd.concat([scaled_df, df[['open', 'high', 'low', 'close']]], axis=1)
             
-            obs = np.array([scaled_data[-WINDOW_SIZE:]], dtype=np.float32)
+            obs = np.array([final_df.values[-WINDOW_SIZE:]], dtype=np.float32)
             
             action, _states = model.predict(obs, deterministic=True)
             action_idx = action[0]
