@@ -90,7 +90,7 @@ def main():
     print(f"Starting Legacy RL Live Trading Agent for {SYMBOL}...")
     try:
         model = PPO.load("ml_bot/rl_model")
-        scaler = joblib.load("ml_bot/rl_scaler.save")
+        scaler = joblib.load("ml_bot/rl_scaler_legacy.save")
         print("Legacy Model and Scaler loaded successfully.")
     except Exception as e:
         print(f"Failed to load legacy model/scaler: {e}")
