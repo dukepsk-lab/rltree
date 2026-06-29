@@ -70,6 +70,7 @@ class TradingEnv(gym.Env):
             
             # Calculate dynamic lot size: 0.01 lot per $100 of equity
             lot_size = (self.balance / 100.0) * 0.01
+            lot_size = min(lot_size, 10.0) # Cap max lot size at 10.0
             
             # Simulate inside the bar
             if high_price >= tp_price:

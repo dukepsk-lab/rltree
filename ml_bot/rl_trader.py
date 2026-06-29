@@ -65,6 +65,7 @@ def open_trade(symbol, action_type, tp_price_diff):
     # Dynamic lot size: 0.01 lot per $100 of equity
     equity = account_info.equity
     lot_size = (equity / 100.0) * 0.01
+    lot_size = min(lot_size, 10.0) # Cap max lot size at 10.0
     lot_size = round(lot_size, 2)
     
     if lot_size < symbol_info.volume_min:
