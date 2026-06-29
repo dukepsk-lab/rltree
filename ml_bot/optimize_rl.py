@@ -23,7 +23,7 @@ def optimize_agent(trial):
         return 0.0
         
     df = add_features(df).dropna()
-    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14']
+    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14', 'day_of_week']
     
     try:
         scaler = joblib.load('ml_bot/rl_scaler.save')

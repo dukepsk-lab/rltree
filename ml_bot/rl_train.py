@@ -84,6 +84,7 @@ def add_features(df):
     high, low, close = df['high'], df['low'], df['close']
     tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
     df['atr_14'] = tr.rolling(14).mean()
+    df['day_of_week'] = df.index.dayofweek
     up, down = high - high.shift(), low.shift() - low
     plus_dm = np.where((up > down) & (up > 0), up, 0.0)
     minus_dm = np.where((down > up) & (down > 0), down, 0.0)
@@ -105,7 +106,7 @@ def add_features(df):
 
 def prepare_rl_data(df):
     df = add_features(df).dropna()
-    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14']
+    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14', 'day_of_week']
     
     scaler = MinMaxScaler()
     scaled_data = scaler.fit_transform(df[features])
