@@ -23,12 +23,13 @@
 //|  wiped the account (200 -> 1.05 USD; 10k run -> -6708 USD).      |
 //|  Fixes, in order of importance:                                  |
 //|   1. DISASTER STOP-LOSS: broker-side SL placed at entry, sized   |
-//|      as InpMaxDailyLossPct of entry equity. Default 7%: the      |
-//|      2026 H1 tick-data optimization (reports/ReportOptimizer     |
-//|      2101170120.xml) shows the profitable plateau at TP 0.75-    |
-//|      1.5% x SL 7-10, while SL<=5 loses to intraday noise. A      |
-//|      money-based emergency close in OnTick backs it up against   |
-//|      gaps. This is the change that prevents the observed ruin.   |
+//|      as InpMaxDailyLossPct of entry equity. Default 9%: two      |
+//|      independent 2026 H1 tick-data optimizations ($200 and      |
+//|      $1000 deposits, reports/ReportOptimizer*.xml) agree the    |
+//|      profitable plateau is TP 1.0-1.25% x SL 8-10, while        |
+//|      SL<=5 loses to normal intraday dips. A money-based         |
+//|      emergency close in OnTick backs it up against gaps. This   |
+//|      is the change that prevents the observed ruin.             |
 //|   2. Broker-side TP also placed at entry, so target/stop survive |
 //|      terminal/VPS disconnects (v1.20 exits lived only in OnTick).|
 //|   3. Profit target is 1% of entry equity in MONEY (mandate),     |
@@ -62,7 +63,7 @@
 //|  ANALYSIS_REPORT.md and sim_robustness.py in this repo.          |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "2.11"
+#property version   "2.12"
 #property description "Robust long-only XAUUSD daily-open EA: 1%/day money target, disaster SL, spread filter, circuit breaker."
 
 #include <Trade\Trade.mqh>
@@ -86,7 +87,7 @@ input int     InpFridayCloseHour      = 22;       // Friday server hour to force
 input bool    InpEnterOnAttachSameDay = false;    // Enter immediately on attach (mid-day)
 
 input group "=== Risk control ==="
-input double  InpMaxDailyLossPct      = 7.0;      // Disaster SL (% of entry equity, 0=off - NOT recommended)
+input double  InpMaxDailyLossPct      = 9.0;      // Disaster SL (% of entry equity, 0=off - NOT recommended)
 input double  InpMaxTotalDDPct        = 30.0;     // Circuit breaker: halt below this % drawdown from peak (0=off)
 input int     InpMaxSpreadPoints      = 80;       // Max spread (points) allowed at entry (0=off)
 input int     InpEntryDelayMinutes    = 5;        // Wait after daily open before entering (rollover spread)
@@ -137,7 +138,7 @@ double  g_sarStep        = 0.02;
 double  g_sarMax         = 0.2;
 string  g_runTag         = "run";
 double  g_dailyProfitPct  = 1.0;  // runtime TP (% of equity; input or cfg override)
-double  g_maxDailyLossPct = 7.0;  // runtime SL (% of equity; input or cfg override)
+double  g_maxDailyLossPct = 9.0;  // runtime SL (% of equity; input or cfg override)
 
 //+------------------------------------------------------------------+
 //| Trading permission check                                          |

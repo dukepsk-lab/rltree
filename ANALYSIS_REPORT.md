@@ -186,6 +186,35 @@ $200 deposit, 1:100, IUXMarkets demo). Raw output is committed as
   uptrend. The plateau pick should be re-validated on a second window (e.g. walk-forward on
   2026 H2 as data accrues) before any live use.
 
+### 6.2 Cross-check at $1,000 deposit + anatomy of the top configuration
+
+A second full sweep at a $1,000 deposit (`reports/ReportOptimizer2101171557_Deposit1000.xml`)
+independently reproduces the plateau, one notch tighter: **TP 1.0–1.5% × SL 8–10 is solidly
+positive in both runs**, and this time MT5's raw winner — **TP 1.25 / SL 10, +$637.36 (+64%)** —
+sits *on* the plateau (worst grid neighbor still +$255), so it is legitimate rather than a spike.
+The larger deposit also scales better because lot rounding is finer (0.10 lots vs 0.02–0.03 at
+$200). Since the two runs agree that SL 7 is the plateau's weak edge and SL 8–10 its core, the
+EA default `InpMaxDailyLossPct` moves 7.0 → **9.0** (v2.12); TP default stays at the mandated 1.0
+with TP 1.25 as the optimizer's slightly stronger alternative.
+
+The single-run report of the top cell (`reports/ReportTester2101171557_Top_Deposit1000.xlsx`,
+99% history quality, 685k ticks) shows exactly the anatomy predicted in section 3:
+
+| Metric | Value | Reading |
+|---|---|---|
+| Net profit | **+$637.36 (+64%)** in 6 months | plateau cell, both deposits agree |
+| Trades | 62 long, **96.8% win rate** | ADX filter traded ~half of all days |
+| Avg holding time | **4 min 18 s** (min 20 s) | confirms the "TP/SL race resolves in minutes" math |
+| Avg win / avg loss | +$15.38 / **−$117.21** | negative skew is still the engine — now capped |
+| Max equity DD | 13.66% | vs 100% wipe-out of v1.20 |
+| Profit factor / Sharpe | 3.23 / 6.06 | LR correlation 0.91 — smooth equity line |
+
+The two losing trades (−$119, −$115) are the February-crash days that destroyed v1.20; here the
+10%-of-equity SL converted "account gone" into "one bad day". The structural caveats stand: the
+win rate is mechanical (SL 10 vs TP 1.25 wins ~89% of races by geometry alone), profitability
+still requires gold's uptrend, and a Z-score of 1.47 on 62 trades is thin evidence — walk-forward
+on H2 2026 before risking real money.
+
 ## 7. Honest limitations & recommendations
 
 - **Robust ≠ profitable.** v2.10 converts "certain eventual ruin" into "bounded drawdowns with a
