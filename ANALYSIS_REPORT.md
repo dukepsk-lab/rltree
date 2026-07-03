@@ -11,6 +11,8 @@ v1.20, XAUUSD D1, 2026.01.01–2026.06.27 window per `test.ini`), plus the RL-ag
 | `sim_robustness.py` | Monte Carlo experiment quantifying each risk-control choice |
 | `optimize_tp_sweep.py` | Monte Carlo grid sweep of the daily TP% x SL% (TP not fixed at 1%) |
 | `optimize_tp.ini` | MT5 strategy-tester preset that optimizes `InpDailyProfitPct` x `InpMaxDailyLossPct` on real data |
+| `reports/ReportOptimizer2101170120.xml` | actual MT5 optimizer output (180 passes, 2026 H1 tick data, IUXMarkets demo) |
+| `analyze_optimizer_report.py` | parses an optimizer XML, prints the TP×SL grid, and ranks cells by worst-neighbor profit |
 | `ANALYSIS_REPORT.md` | this report |
 
 ---
@@ -155,6 +157,34 @@ Three conclusions:
    uptrend — and with 19–42% ruin odds. That corner is statistically the same bet that destroyed
    v1.20. If the MT5 optimizer crowns a corner cell on one historical window, check its drawdown
    column before believing it.
+
+### 6.1 Real-data optimization results (2026 H1, 180 passes)
+
+The `optimize_tp.ini` sweep was run on real tick data (XAUUSD Daily, 2026.01.01–2026.06.27,
+$200 deposit, 1:100, IUXMarkets demo). Raw output is committed as
+`reports/ReportOptimizer2101170120.xml`; reproduce the analysis with
+`python3 analyze_optimizer_report.py reports/ReportOptimizer2101170120.xml`. Headlines:
+
+- **MT5's raw winner is an overfit spike.** TP 2.25 / SL 10 tops the ranking at **+$114.61**, but
+  **every one of its grid neighbors loses ~$50–60** (all halted by the circuit breaker). One
+  quarter-point of TP separates +57% from −30% — that is luck, not signal. Do not deploy it.
+- **The genuine plateau is TP 0.75–1.5% × SL 7–10%**: a contiguous block where every cell is
+  profitable (+$23…+$83). Ranked by worst-neighbor profit, the deployable picks are
+  **TP 1.0 / SL 7** (+$78.6 ≈ +39%, DD 10.9%, PF 2.39, Sharpe 4.79, 62 trades) and
+  **TP 1.25 / SL 10** (worst neighbor still +$44). The mandated 1%/day target sits in the middle
+  of the plateau — the optimization *confirms* it rather than replacing it.
+- **Tight stops lose on real data.** The SL 2–3 columns are almost uniformly negative: gold dips
+  $2–5 intraday before resuming, so a 2–3%-of-equity stop converts normal noise into realized
+  losses. This is where the synthetic sim (which favored tight stops for survival) and real
+  trending data disagree → **EA default `InpMaxDailyLossPct` raised from 5.0 to 7.0** (v2.11).
+  Note SL 7–10% of equity per day is still a meaningful risk appetite; the circuit breaker is the
+  backstop behind it.
+- **The circuit breaker did its job.** 52 of 180 configurations were halted after 8–10 trades at
+  roughly −30%; the worst cell in the whole grid lost $59.98. The same configurations under
+  v1.20 rules would have ridden to near −100%.
+- Caveat: this is **one six-month window** containing both the February crash and a strong
+  uptrend. The plateau pick should be re-validated on a second window (e.g. walk-forward on
+  2026 H2 as data accrues) before any live use.
 
 ## 7. Honest limitations & recommendations
 
