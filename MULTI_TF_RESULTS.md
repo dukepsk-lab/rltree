@@ -69,6 +69,40 @@ Realistic expectation from the unseen 18-month window: **~+40–65% per 1.5 year
 (TP 1%/day) remains fine for the demo walk-forward, but this dataset says its edge is
 the 2021–24 bull regime, not a stable property.
 
+## 2026-only backtest (Jan 1 – Jul 3, 2026)
+
+Requested follow-up: the same grid restricted to 2026. Two structural facts first:
+
+- **2026 is a different market.** Median H1 bar range is **$19.56 vs $4.84 in 2024** (4×),
+  and gold crashes from the ~$5,000 February peak to ~$4,180 by July on this feed.
+- **83% of 2026 H1 bars span more than $12**, so even a TP 3 / SL 9 race frequently sits
+  inside a single H1 bar → the pess/opt bounds get wide, and only conclusions where both
+  bounds agree in sign are trustworthy.
+
+Results for the key cells (long, ADX):
+
+| Cell | pess (ties→SL) | opt (ties→TP) | verdict |
+|---|---|---|---|
+| **H4 TP 3 / SL 9** (recommended) | −30.2% (halted) | **−15.1% (halted)** | **loses in 2026, bounded −30…−15%** |
+| H4 TP 1.0 / SL 9 | −33.1% | +76.9% | unmeasurable at H1 resolution |
+| D1 TP 1.0–1.25 / SL 9–10 (mandate) | ≈−30% (halted) | +2…+7% | flat-to-losing; note the IUX tick tester said **+64%** for the same window — feeds/models disagree badly in 2026 |
+| all shorts / both, all TFs | ≈−20…−32% | — | still lose despite the crash (high-vol counter-rallies) |
+
+Takeaways:
+
+1. **2026 broke the regime.** Every long config that carried 2021–25 loses in 2026 on this
+   feed; the recommended H4 cell is genuinely negative (both bounds < 0). The circuit
+   breaker capped the damage near −30% — exactly its job — and that −30% *is* the realistic
+   cost of a regime change under this strategy family.
+2. **Shorting still doesn't save 2026.** The crash came with 4× volatility; bar-open shorts
+   get stopped on counter-rallies just like longs on dips.
+3. **The 2025 profits carried the OOS window.** The +64% OOS figure in the table above is
+   2025 gains plus an early-2026 breaker stop; do not read it as "works in 2026".
+4. **Decisive verification needs finer data**: either export **M1** history and rerun this
+   grid, or run the v3 EA in the MT5 tick tester over 2026 (`backtest_2026_h4.ini`) — the
+   tick tester resolves what H1 bars cannot, and will also arbitrate the feed disagreement
+   with the earlier IUX +64% result.
+
 ## Reproduce
 
 ```
