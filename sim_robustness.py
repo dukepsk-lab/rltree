@@ -54,10 +54,11 @@ def p_hit_up_before_down(a, b, mu, sig):
     return np.clip(p, 0.0, 1.0)
 
 
-def run(sl_pct, drift=0.0):
+def run(sl_pct, drift=0.0, tp_pct=TARGET_PCT):
     """sl_pct: stop-loss as % of equity per day, or None for no stop.
     drift: expected daily log-return of gold (0 = no view; the 2025-26 gold
-    bull run was roughly +0.10%/day)."""
+    bull run was roughly +0.10%/day).
+    tp_pct: daily profit target as % of equity (mandate default 1.0)."""
     rng = np.random.default_rng(42)   # common random numbers across scenarios
     equity = np.full(N_PATHS, START_EQUITY)
     peak = equity.copy()
@@ -77,7 +78,7 @@ def run(sl_pct, drift=0.0):
         lot = np.maximum(np.floor(eq * 0.01 / CAPITAL_PER_001 / LOT_STEP)
                          * LOT_STEP, LOT_STEP)
         upd = lot * CONTRACT              # P/L in $ per $1 gold move
-        a = (eq * TARGET_PCT / 100.0) / upd + SPREAD      # TP distance ($)
+        a = (eq * tp_pct / 100.0) / upd + SPREAD          # TP distance ($)
         pnl = np.empty(n)
 
         if sl_pct is not None:
@@ -86,7 +87,7 @@ def run(sl_pct, drift=0.0):
             b = np.maximum((eq * sl_pct / 100.0) / upd - SPREAD, 0.01)
             p = p_hit_up_before_down(a, b, mu, sig)
             win = rng.random(n) < p
-            pnl[win] = eq[win] * TARGET_PCT / 100.0
+            pnl[win] = eq[win] * tp_pct / 100.0
             pnl[~win] = -eq[~win] * sl_pct / 100.0
         else:
             # no SL: sample the day's close, then the path max/min via the
@@ -97,7 +98,7 @@ def run(sl_pct, drift=0.0):
             v = rng.random(n)
             mmin = 0.5 * (c - np.sqrt(c**2 - 2.0 * sig**2 * np.log(v)))
             win = mmax >= a
-            pnl[win] = eq[win] * TARGET_PCT / 100.0
+            pnl[win] = eq[win] * tp_pct / 100.0
             pnl[~win] = (c[~win] - SPREAD) * upd[~win]
             # margin stop-out: unrealized loss reached ~100% of equity
             blown = (~win) & (eq + (mmin - SPREAD) * upd <= 0.0)

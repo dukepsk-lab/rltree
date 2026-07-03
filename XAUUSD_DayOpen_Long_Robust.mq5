@@ -5,8 +5,12 @@
 //|  Long-only XAUUSD Expert Advisor.                                |
 //|  - Exactly ONE market BUY per trading day (one D1 bar = one      |
 //|    trade), opened near the open of each new daily bar.           |
-//|  - Profit target = 1% of account equity per day (money-based,    |
-//|    net of swap+commission), NOT a fixed $ price move.            |
+//|  - Profit target = % of account equity per day (money-based,     |
+//|    net of swap+commission), NOT a fixed $ price move. Default 1% |
+//|    but OPTIMIZABLE: sweep InpDailyProfitPct/InpMaxDailyLossPct   |
+//|    in the strategy tester (see optimize_tp.ini) or set tppct=/   |
+//|    slpct= in xau_filter.cfg for scripted batch runs. OnTester    |
+//|    returns a DD-penalized score for the "Custom max" criterion.  |
 //|  - Position sizing: 0.01 lot per $100 of equity                  |
 //|    (lot = equity * 0.01 / InpCapitalPer001Lot).                  |
 //|  - Position never held across the daily bar (EOD close) and is   |
@@ -55,7 +59,7 @@
 //|  ANALYSIS_REPORT.md and sim_robustness.py in this repo.          |
 //+------------------------------------------------------------------+
 #property copyright "2026"
-#property version   "2.00"
+#property version   "2.10"
 #property description "Robust long-only XAUUSD daily-open EA: 1%/day money target, disaster SL, spread filter, circuit breaker."
 
 #include <Trade\Trade.mqh>
@@ -129,6 +133,8 @@ int     g_linRegPeriod   = 20;
 double  g_sarStep        = 0.02;
 double  g_sarMax         = 0.2;
 string  g_runTag         = "run";
+double  g_dailyProfitPct  = 1.0;  // runtime TP (% of equity; input or cfg override)
+double  g_maxDailyLossPct = 5.0;  // runtime SL (% of equity; input or cfg override)
 
 //+------------------------------------------------------------------+
 //| Trading permission check                                          |
@@ -363,12 +369,12 @@ bool TryOpenLong(void)
    double mpu = MoneyPerUnitPerLot();            // $ per 1.0 move per lot
    if(mpu <= 0.0) return(false);
 
-   // money targets from the MANDATE: 1% of equity up, InpMaxDailyLossPct down
-   double targetMoney  = equity * InpDailyProfitPct   / 100.0;
-   double maxLossMoney = equity * InpMaxDailyLossPct  / 100.0;
+   // money targets from the MANDATE: TP% of equity up, SL% of equity down
+   double targetMoney  = equity * g_dailyProfitPct   / 100.0;
+   double maxLossMoney = equity * g_maxDailyLossPct  / 100.0;
 
    double tpMove = targetMoney / (lot * mpu);    // price distance for +1% equity
-   double slMove = (InpMaxDailyLossPct > 0.0 ? maxLossMoney / (lot * mpu) : 0.0);
+   double slMove = (g_maxDailyLossPct > 0.0 ? maxLossMoney / (lot * mpu) : 0.0);
 
    // respect broker minimum stop distance
    double point      = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -391,8 +397,8 @@ bool TryOpenLong(void)
          g_maxLossMoney = maxLossMoney;
          PrintFormat("BUY opened lot=%.2f @ %.*f | TP=%.*f (+$%.2f = %.2f%%) | SL=%.*f (-$%.2f = %.2f%%) | ticket=%I64u",
                      lot, _Digits, ask,
-                     _Digits, tpPrice, targetMoney, InpDailyProfitPct,
-                     _Digits, slPrice, maxLossMoney, InpMaxDailyLossPct,
+                     _Digits, tpPrice, targetMoney, g_dailyProfitPct,
+                     _Digits, slPrice, maxLossMoney, g_maxDailyLossPct,
                      trade.ResultOrder());
          return(true);
       }
@@ -448,6 +454,8 @@ void ReadFilterConfig(void)
       else if(key == "linreg")     { g_linRegPeriod  = (int)StringToInteger(val); loaded++; }
       else if(key == "sarstep")    { g_sarStep       = StringToDouble(val); loaded++; }
       else if(key == "sarmax")     { g_sarMax        = StringToDouble(val); loaded++; }
+      else if(key == "tppct")      { g_dailyProfitPct  = StringToDouble(val); loaded++; }
+      else if(key == "slpct")      { g_maxDailyLossPct = StringToDouble(val); loaded++; }
    }
    FileClose(h);
    if(loaded > 0)
@@ -480,6 +488,8 @@ int OnInit()
    g_sarStep        = InpSarStep;
    g_sarMax         = InpSarMax;
    g_runTag         = InpRunTag;
+   g_dailyProfitPct  = InpDailyProfitPct;
+   g_maxDailyLossPct = InpMaxDailyLossPct;
    ReadFilterConfig();
 
    if(g_trendFilter == TREND_ADX)
@@ -514,10 +524,10 @@ int OnInit()
    g_haltedByDD     = false;
    UpdatePeakEquity(g_entryEquity);
 
-   PrintFormat("OnInit OK v2.00: magic=%I64d equity=%.2f filter=%s runtag=%s "
+   PrintFormat("OnInit OK v2.10: magic=%I64d equity=%.2f filter=%s runtag=%s "
                "target=%.2f%%/day SL=%.2f%%/day maxDD=%.1f%%",
                InpMagic, g_entryEquity, EnumToString(g_trendFilter), g_runTag,
-               InpDailyProfitPct, InpMaxDailyLossPct, InpMaxTotalDDPct);
+               g_dailyProfitPct, g_maxDailyLossPct, InpMaxTotalDDPct);
    return(INIT_SUCCEEDED);
 }
 
@@ -660,13 +670,13 @@ void OnTick(void)
       if(g_targetMoney > 0.0 && net >= g_targetMoney)
       {
          ClosePosition(tk, StringFormat("Profit target hit (net $%.2f >= $%.2f = %.2f%% of equity)",
-                                        net, g_targetMoney, InpDailyProfitPct));
+                                        net, g_targetMoney, g_dailyProfitPct));
          g_tradedToday = true;
       }
       else if(g_maxLossMoney > 0.0 && net <= -g_maxLossMoney)
       {
          ClosePosition(tk, StringFormat("EMERGENCY loss cap (net $%.2f <= -$%.2f = %.2f%% of equity)",
-                                        net, g_maxLossMoney, InpMaxDailyLossPct));
+                                        net, g_maxLossMoney, g_maxDailyLossPct));
          g_tradedToday = true;
       }
    }
@@ -705,7 +715,10 @@ void OnTick(void)
 }
 
 //+------------------------------------------------------------------+
-//| Tester: write results to <Common>\Files\results_<runtag>.csv      |
+//| Tester: one CSV per (runtag, TP, SL) so optimization passes do    |
+//| not overwrite each other. Returns a DD-penalized score so the     |
+//| MT5 optimizer ("Custom max" criterion) does not crown a config    |
+//| that made money by carrying ruinous drawdowns.                    |
 //+------------------------------------------------------------------+
 double OnTester(void)
 {
@@ -718,20 +731,28 @@ double OnTester(void)
    long   lossT     = (long)TesterStatistics(STAT_LOSS_TRADES);
    double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
 
-   string fn = StringFormat("results_%s.csv", g_runTag);
+   // custom optimization criterion: profit scaled down by relative DD;
+   // a pass that lost half its equity along the way scores half its profit
+   double score = netProfit * (100.0 - MathMin(ddPct, 100.0)) / 100.0;
+
+   string fn = StringFormat("results_%s_tp%s_sl%s.csv", g_runTag,
+                            DoubleToString(g_dailyProfitPct, 2),
+                            DoubleToString(g_maxDailyLossPct, 2));
    int h = FileOpen(fn, FILE_WRITE | FILE_CSV | FILE_ANSI | FILE_COMMON, ',');
    if(h != INVALID_HANDLE)
    {
-      FileWrite(h, "tag","filter","netProfit","profitFactor","maxDDpct","sharpe",
-                   "trades","wins","losses","finalBalance");
+      FileWrite(h, "tag","filter","tpPct","slPct","netProfit","profitFactor",
+                   "maxDDpct","sharpe","score","trades","wins","losses","finalBalance");
       FileWrite(h, g_runTag, EnumToString(g_trendFilter),
+                DoubleToString(g_dailyProfitPct,2), DoubleToString(g_maxDailyLossPct,2),
                 DoubleToString(netProfit,2), DoubleToString(pf,3),
                 DoubleToString(ddPct,2), DoubleToString(sharpe,3),
+                DoubleToString(score,2),
                 trades, winT, lossT, DoubleToString(balance,2));
       FileClose(h);
-      PrintFormat("OnTester CSV written: %s | net=%.2f PF=%.3f DD=%.2f%% trades=%I64d",
-                  fn, netProfit, pf, ddPct, trades);
+      PrintFormat("OnTester CSV written: %s | net=%.2f PF=%.3f DD=%.2f%% score=%.2f trades=%I64d",
+                  fn, netProfit, pf, ddPct, score, trades);
    }
-   return(netProfit);
+   return(score);
 }
 //+------------------------------------------------------------------+

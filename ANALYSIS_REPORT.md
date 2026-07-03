@@ -7,8 +7,10 @@ v1.20, XAUUSD D1, 2026.01.01–2026.06.27 window per `test.ini`), plus the RL-ag
 
 | File | What it is |
 |---|---|
-| `XAUUSD_DayOpen_Long_Robust.mq5` | v2.00 of the EA with the robustness fixes (needs compiling in MetaEditor) |
+| `XAUUSD_DayOpen_Long_Robust.mq5` | v2.10 of the EA with the robustness fixes; TP/SL optimizable (needs compiling in MetaEditor) |
 | `sim_robustness.py` | Monte Carlo experiment quantifying each risk-control choice |
+| `optimize_tp_sweep.py` | Monte Carlo grid sweep of the daily TP% x SL% (TP not fixed at 1%) |
+| `optimize_tp.ini` | MT5 strategy-tester preset that optimizes `InpDailyProfitPct` x `InpMaxDailyLossPct` on real data |
 | `ANALYSIS_REPORT.md` | this report |
 
 ---
@@ -86,12 +88,12 @@ Interpretation:
   strategy as mandated is a *risk-shaping* system, not an *edge* system; its historical profits came
   from gold rising, and robustness work can only make it survive the days gold doesn't.
 
-## 4. What v2.00 (`XAUUSD_DayOpen_Long_Robust.mq5`) changes
+## 4. What v2.10 (`XAUUSD_DayOpen_Long_Robust.mq5`) changes
 
 Mandate-preserving: still one BUY per D1 bar, still 1%/day equity target, still 0.01 lot/$100,
 still EOD + Friday close, same trend filters, same `xau_filter.cfg` batch-test mechanism.
 
-| # | Failure observed | Fix in v2.00 | Input (default) |
+| # | Failure observed | Fix in v2.10 | Input (default) |
 |---|---|---|---|
 | 1 | −$130 day wiped the account | Broker-side **disaster SL** at entry, sized as % of entry equity; money-based emergency close in `OnTick` backs it up against gaps | `InpMaxDailyLossPct` (5.0) |
 | 2 | Exits lived only in `OnTick` | Broker-side **TP and SL attached to the order** (survive disconnects), respecting `SYMBOL_TRADE_STOPS_LEVEL` | — |
@@ -117,9 +119,46 @@ without touching each other's positions.
 3. `python3 sim_robustness.py` (needs `numpy`) reproduces the risk table above; edit the constants
    at the top to test other spreads/vol regimes/SL levels.
 
-## 6. Honest limitations & recommendations
+## 6. TP optimization — the target does not have to be 1%
 
-- **Robust ≠ profitable.** v2.00 converts "certain eventual ruin" into "bounded drawdowns with a
+The daily target is now a first-class optimizable parameter:
+
+- **In the simulator:** `python3 optimize_tp_sweep.py` sweeps TP ∈ {0.25…12}% × SL ∈ {2…10}%
+  under three gold-drift regimes (zero / +0.1%/day / +0.3%/day).
+- **In MT5 on real data:** run the tester with `optimize_tp.ini` — it optimizes
+  `InpDailyProfitPct` (0.25→5.0 step 0.25) × `InpMaxDailyLossPct` (2→10 step 1) using the
+  **Custom max** criterion. `OnTester` returns `netProfit × (100 − maxDD%) / 100`, so a pass that
+  "won" through near-ruin drawdowns cannot top the ranking. Each pass writes its own
+  `results_<tag>_tp<TP>_sl<SL>.csv` (files no longer overwrite each other), and
+  `tppct=` / `slpct=` keys in `xau_filter.cfg` allow scripted batch runs.
+
+What the sweep shows (median final $ from $200 over 125 days, ruin % in parentheses):
+
+| TP% \ SL% | 2% | 5% | 10% |
+|---|---|---|---|
+| 0.25 | 158–162 (0.0) | 160 (0.0) | 159 (0.1–0.2) |
+| 1.00 | 158–163 (0.0) | 150–160 (0.0) | 155–174 (1–2.5) |
+| 3.00 | 150–158 (0.0) | 141–166 (1.5–3.4) | 123–184 (7–17) |
+| 8.00 | 136–165 (0.7–1.5) | 120–200 (8–19) | 77–230 (19–42) |
+
+(ranges span the zero-drift → strong-bull scenarios)
+
+Three conclusions:
+
+1. **The TP knob shapes risk, not expectancy.** With 0.01 lot/$100 sizing the TP/SL race ends
+   within minutes, so drift capture (≈ drift × TP×SL / vol²) never covers the ~0.3%/day spread.
+   No cell reaches a median above the $200 start under zero or normal bull drift.
+2. **The sane region is TP 0.25–3% with SL 2–5%**: ruin ≈ 0%, best medians, lowest variance.
+   The mandated 1%/5% sits comfortably inside it; there is no strong reason to move within the
+   region unless real-data optimization says otherwise.
+3. **Big targets are a trap.** TP 8–12% with SL 10% shows the best medians *only* in a relentless
+   uptrend — and with 19–42% ruin odds. That corner is statistically the same bet that destroyed
+   v1.20. If the MT5 optimizer crowns a corner cell on one historical window, check its drawdown
+   column before believing it.
+
+## 7. Honest limitations & recommendations
+
+- **Robust ≠ profitable.** v2.10 converts "certain eventual ruin" into "bounded drawdowns with a
   ~0.2–0.3%/day cost headwind". Expected 1%/day compounding is not achievable with these
   parameters — that would be ~1,100%/year with no drawdown, which no spread-paying barrier race
   delivers.
