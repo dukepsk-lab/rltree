@@ -18,12 +18,15 @@ Caveats:
 """
 
 import argparse
+import os
 
 import joblib
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from stable_baselines3 import PPO
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 WINDOW_SIZE = 20
 TP_PRICE_DIFF = 3.00
@@ -225,8 +228,8 @@ def main():
     args = parser.parse_args()
 
     print("Loading model and scaler...")
-    model = PPO.load("rl_model")
-    scaler = joblib.load("rl_scaler_d1_legacy.save")
+    model = PPO.load(os.path.join(BASE_DIR, "rl_model"))
+    scaler = joblib.load(os.path.join(BASE_DIR, "rl_scaler_d1_legacy.save"))
     assert tuple(model.observation_space.shape) == (WINDOW_SIZE, 13), \
         f"unexpected model obs {model.observation_space.shape}"
     assert scaler.n_features_in_ == len(FEATURES), \
