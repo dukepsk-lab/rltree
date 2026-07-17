@@ -10,3 +10,5 @@ stable-baselines3
 
 yfinance
 optuna
+xgboost
+joblib
