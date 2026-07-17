@@ -6,30 +6,55 @@ forward-tested on a demo account, plus an offline backtester. Branch:
 
 ---
 
-## 1. What the committed model artifacts actually are
+## 1. Which model this targets — IMPORTANT, read before running anything
 
-Inspecting the binaries (not the code) shows which pipeline each artifact belongs to:
+The repo's `ml_bot/rl_env.py` / `rl_train.py` implement an **Always-In D1 strategy**:
+action 0 = BUY, action 1 = SELL, a position is opened on *every* bar (no flat/skip
+state), TP = `min(atr * TP_MULTIPLIER, $3.00)`, SL (as trained) = `atr *
+SL_MULTIPLIER` with **no cap**, lot = 0.01 per $100 equity capped at 10, $100/oz/lot.
+Observation shape: `(20, 16)` — 14 MinMax-scaled features (`rl_scaler.save`) + raw
+`spread_cost` + raw `atr_14`.
 
-| Artifact | Observation | Matches |
-|---|---|---|
-| `rl_model.zip` (D1, 1M steps) | (20, **13**) = 12 scaled features + raw `spread_cost` | legacy env at git `6150c7d`: **long-only**, action 1 = BUY at daily open, flat TP = entry + $3.00, EOD close, no SL, lot 0.01/$100 capped 10 |
-| `rl_scaler.save` | 14 features | current Always-In pipeline — **not** the D1 model's scaler |
-| `rl_scaler_legacy.save` | 10 features | an older 10-feature model that is no longer in the repo |
-| `rl_model_h4/h8/h12.zip` | (20, **10**) | a pre-macro feature set whose training code was never committed |
+The `rl_model.zip` that was committed to git before this branch was actually trained
+against an **older, different env** (git `6150c7d`: long-only, action 1 = BUY,
+flat $3 TP, obs shape `(20, 13)`) — that mismatch is what the earlier version of this
+fix worked around with a sliced 12-feature scaler.
 
-Consequences:
+**As of this branch, `rl_trader.py` and `backtest_offline.py` target the CURRENT
+Always-In env above**, because that's what you're training locally. **You need to
+commit and push your locally retrained `ml_bot/rl_model.zip` and
+`ml_bot/rl_scaler.save`** — right now those two files only exist on your machine
+(uncommitted), so anyone else pulling this branch still gets the old
+git-committed model, which will fail the shape check in both scripts
+(`unexpected model obs (20, 13)`, not `(20, 16)`).
 
-- **No committed scaler matched the D1 model.** Fixed by slicing the first 12 columns
-  of `rl_scaler.save` (fitted the same day, on the same broker data, and MinMaxScaler
-  is per-column) → committed as **`rl_scaler_d1_legacy.save`**.
-- **The current `rl_env.py`/`rl_train.py` (Always-In, 16-feature obs) has no trained
-  model.** If you retrain with them, update `rl_trader.py`'s feature lists and action
-  mapping (comments in the file show where).
-- **h4/h8/h12 models are stale** (obs 10 ≠ anything the current code produces). Their
-  traders now verify the observation shape at startup and will refuse to run until the
-  models are retrained with `rl_train_h4/h8/h12.py`.
+```
+git add ml_bot/rl_model.zip ml_bot/rl_scaler.save
+git commit -m "Commit retrained Always-In D1 model"
+git push
+```
 
-## 2. Bugs fixed in `ml_bot/`
+If you intended to keep testing the *old* git-committed legacy model instead, say so —
+that needs a different trader config (BUY-only, flat $3 TP, 13-dim obs); ask and it'll
+be restored.
+
+## 2. Why the trained SL can't be sent to the broker as-is
+
+`SL_MULTIPLIER = 2.0`, uncapped. At the mandated sizing (lot = equity/100 * 0.01), a
+$1 gold move ≈ 1% of equity. Gold's ATR-14 is routinely $30-100+, so `atr * 2` can be
+$60-200+ — **that SL distance alone can exceed 100% of equity in a single bar**. TP is
+capped at $3 but SL is not: the training env's reward function never needed the SL to
+be survivable because `done = balance < 0.5 * initial_balance` just ends the episode,
+it doesn't prevent the loss.
+
+`rl_trader.py` instead attaches a **broker-side SL sized as 5% of equity**
+(`SL_EQUITY_PCT`, converted to a price distance via lot size and contract size) —
+matching `InpMaxDailyLossPct` in the robust EA. This means **the deployed risk is not
+identical to what the agent was trained against**; `backtest_offline.py` reports all
+three variants (no SL / trained uncapped ATR SL / deployed 5%-equity SL) side by side
+so you can see the gap before going live.
+
+## 3. Bugs fixed in `ml_bot/`
 
 `rl_trader.py` (rewritten):
 
@@ -38,30 +63,28 @@ Consequences:
    first BUY signal.
 3. Opened positions with magic `234000` but closed only magic `999999` → the bot could
    never close its own positions. Now one `MAGIC_NUMBER` everywhere.
-4. Action mapping now matches the model's training env (legacy: 1 = BUY, 0 = skip).
-   The old code was written for a different env's mapping.
-5. Observation now built exactly as in training (12 scaled + raw `spread_cost`),
-   with **startup guards**: model obs shape and scaler feature count are checked, and
-   the bot refuses to trade on any mismatch.
-6. Broker-side TP (+$3.00 as trained) **and a disaster SL at 5% of equity** attached
-   to every order. At the mandated sizing $1/oz ≈ 1% of equity, so an ATR-based stop
-   (2×ATR ≈ $130) would be >100% of equity — the stop must be equity-based. 5% matches
-   `InpMaxDailyLossPct` in the robust EA.
+4. Action mapping matches the Always-In env (0 = BUY, 1 = SELL, always trades).
+5. Observation built exactly as in training (14 scaled + raw `spread_cost` + raw
+   `atr_14`), with **startup guards**: model obs shape and scaler feature count are
+   checked, and the bot refuses to trade on any mismatch.
+6. Broker-side TP (as trained, capped at $3) **and a disaster SL at 5% of equity**
+   attached to every order — see §2.
 7. Half-applied ensemble patch removed (its `cnn_lstm_model.keras` /
    `xgboost_model.json` were never committed; `update_trader_ensemble.py`'s string
    replacements had silently failed).
 8. Paths are now relative to the script location, error handling + retry around the
    whole loop, dead-tick guards on all order sends.
 
-`rl_trader_h4/h8/h12.py` (rewritten): undefined-variable crash in `open_trade`
-(`tp_percent`), no-SL entries, and 12-vs-13 feature mismatch fixed the same way; plus
-the startup shape guard that currently (correctly) blocks the stale models.
+`rl_trader_h4/h8/h12.py` (rewritten, **unaffected by §1** — separate model family):
+undefined-variable crash in `open_trade` (`tp_percent`), no-SL entries, and a 10-vs-9
+feature mismatch fixed the same way; startup shape guard currently (correctly) blocks
+these stale 10-feature models until retrained with `rl_train_h4/h8/h12.py`.
 
 `requirements.txt`: added `xgboost`, `joblib`.
 
-## 3. Offline backtest
+## 4. Offline backtest
 
-`ml_bot/backtest_offline.py` replays the exact legacy trade rules with the real
+`ml_bot/backtest_offline.py` replays the exact Always-In trade rules with the real
 model + scaler, no MT5 needed:
 
 ```
@@ -72,28 +95,32 @@ python ml_bot/export_data_mt5.py
 python ml_bot/backtest_offline.py --csv ml_bot/xauusd_d1.csv
 ```
 
-It reports full-window, 2026-YTD and post-2026-06-29 (true out-of-sample) stats, each
-with and without the 5% disaster SL, and saves an equity-curve plot. When a D1 bar
-touches both TP and SL the outcome is drawn with the continuous-barrier probability
-`SL/(TP+SL)` (same math as `sim_robustness.py`) — OHLC alone cannot order intrabar
-touches.
+It reports three risk variants (no SL / trained uncapped ATR SL / deployed 5%-equity
+SL) and saves an equity-curve plot for each. When a D1 bar touches both TP and SL the
+outcome is drawn with the continuous-barrier probability `SL/(TP+SL)` (same math as
+`sim_robustness.py`) — OHLC alone cannot order intrabar touches.
 
 **Status of this run:** this sandbox's network policy blocks all market-data hosts
-(Yahoo, Stooq, FRED all 403), so real-data numbers could not be produced here. The
-pipeline was verified end-to-end with clearly-labeled synthetic data: the model loads,
-predicts a non-degenerate mix (~51% BUY days on the synthetic path), trades resolve,
-stats/plots generate, and the 5% SL caps every loss near 5% as designed. Run one of
-the commands above on your machine to get the real numbers before going to demo.
+(Yahoo, Stooq, FRED all 403), and the sandbox does not have your locally-retrained
+`rl_model.zip`/`rl_scaler.save` (see §1) — so no real numbers could be produced here.
+The full pipeline (model load, shape asserts, per-bar prediction, all three SL modes,
+stats, plotting) was verified end-to-end with a throwaway model trained on
+clearly-labeled synthetic data, confirming the code runs correctly; it says nothing
+about the actual strategy's performance. Run one of the commands above on your machine
+— with your real model and (ideally) `--csv` broker data — for numbers that matter.
 
-## 4. Demo forward-test checklist
+## 5. Demo forward-test checklist
 
-- [ ] `python ml_bot/backtest_offline.py --csv ...` on broker data — confirm the
-      out-of-sample window isn't already falling apart.
+- [ ] Commit + push your retrained `rl_model.zip` / `rl_scaler.save` (§1).
+- [ ] `python ml_bot/backtest_offline.py --csv ...` on broker data — look at all three
+      SL variants, not just "no SL" (which is closest to what training optimized for
+      but is not what you can safely deploy).
 - [ ] EA side: compile `XAUUSD_DayOpen_Long_Robust.mq5` (the committed `.ex5` is
       still v1.20) and A/B it per `ANALYSIS_REPORT.md` §5.
 - [ ] Start `rl_trader.py` on the **demo** account; the startup guards should print
       the model/scaler check and then wait for the next D1 bar.
 - [ ] Expectations: the model's profits in backtests came mostly from gold's uptrend;
       the ~$0.30/day spread toll and the $3-TP barrier race mean flat/down regimes
-      will bleed. The 5% SL bounds the damage; it does not create edge.
+      will bleed. The SL bounds the damage; it does not create edge — and note it
+      changes the model's risk profile from what it was trained against (§2).
 - [ ] Do **not** run the h4/h8/h12 traders until retrained (they will refuse anyway).

@@ -1,20 +1,29 @@
-"""Offline backtest of the committed D1 PPO model (rl_model.zip) without MT5.
+"""Offline backtest of the D1 PPO model (rl_model.zip) without MT5.
 
-The committed model is the legacy long-only agent (git 6150c7d):
-  - observation: 20 x (12 MinMax-scaled features + raw spread_cost)
-  - scaler: rl_scaler_d1_legacy.save (first 12 columns of rl_scaler.save)
-  - action 1 = BUY at the daily open, action 0 = skip the day
-  - TP = entry + $3.00 (intrabar), otherwise forced close at the daily close
-  - dynamic lot 0.01 per $100 equity, capped at 10 lots, $1/oz/0.01-lot
-This script replays exactly those rules on yfinance gold futures (GC=F) as a
-proxy for broker XAUUSD, and additionally simulates the same policy WITH the
-disaster stop-loss (5% of equity) that the fixed rl_trader.py now attaches.
+Matches the CURRENT rl_env.py / rl_train.py (Always-In strategy):
+  - observation: 20 x (14 MinMax-scaled features + raw spread_cost + raw
+    atr_14) = shape (20, 16), scaler: rl_scaler.save (14 features)
+  - action 0 = BUY, action 1 = SELL -- a position is opened EVERY bar (no
+    flat/skip state)
+  - TP = min(atr * TP_MULTIPLIER, $3.00) intrabar, otherwise forced close
+    at the bar's close
+  - trained SL = atr * SL_MULTIPLIER (uncapped) -- see the SL_EQUITY_PCT
+    note below, this is not safe to deploy as-is
+  - dynamic lot 0.01 per $100 equity, capped at 10 lots, $100/oz/lot
+
+This script replays those rules on yfinance gold futures (GC=F), or on a
+local CSV exported by export_data_mt5.py, as a proxy for broker XAUUSD.
+It reports results BOTH with the trained (uncapped ATR) SL and with the
+broker-side 5%-of-equity disaster SL that rl_trader.py actually attaches
+-- the two are not the same risk profile, see the note above.
 
 Caveats:
 - GC=F prices/volumes differ slightly from broker XAUUSD spot feeds.
 - spread_cost is a constant assumption (default $0.15/oz).
-- The model was trained 2026-06-29 on ~5000 D1 broker bars, so everything
-  before that date is IN-SAMPLE; only later bars are true out-of-sample.
+- This model is whatever is on disk at ml_bot/rl_model.zip when you run
+  this script -- if you retrained locally, that's an IN-SAMPLE model over
+  however much of the data you trained on. Only bars strictly after your
+  own training run are true out-of-sample.
 """
 
 import argparse
@@ -29,15 +38,17 @@ from stable_baselines3 import PPO
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 WINDOW_SIZE = 20
-TP_PRICE_DIFF = 3.00
-SL_EQUITY_PCT = 5.0
+TP_MULTIPLIER = 1.0
+TP_CAP = 3.00
+SL_MULTIPLIER = 2.0    # trained SL multiplier (uncapped -- dangerous, see module docstring)
+SL_EQUITY_PCT = 5.0    # broker-side disaster SL actually deployed by rl_trader.py
 SPREAD_COST = 0.15
 START_BALANCE = 10000.0
 MAX_LOT = 10.0
-TRAIN_CUTOFF = '2026-06-29'
 
 FEATURES = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20',
-            'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y']
+            'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14',
+            'day_of_week']
 
 
 def fetch_yf(ticker, start, end):
@@ -61,6 +72,20 @@ def fetch_data(start, end):
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df['spread_cost'] = SPREAD_COST
     return df.dropna()
+
+
+def load_csv(path):
+    """Load OHLC data exported by export_data_mt5.py (or any CSV with
+    time,open,high,low,close,tick_volume[,spread_cost] columns)."""
+    df = pd.read_csv(path, parse_dates=['time'], index_col='time')
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    if 'spread_cost' not in df.columns:
+        df['spread_cost'] = SPREAD_COST
+    cols = ['open', 'high', 'low', 'close', 'tick_volume', 'spread_cost']
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"CSV missing columns: {missing}")
+    return df[cols].dropna()
 
 
 def add_features(df):
@@ -96,6 +121,7 @@ def add_features(df):
     tr = pd.concat([high - low, (high - close.shift()).abs(),
                     (low - close.shift()).abs()], axis=1).max(axis=1)
     df['atr_14'] = tr.rolling(14).mean()
+    df['day_of_week'] = df.index.dayofweek
     up, down = high - high.shift(), low.shift() - low
     plus_dm = np.where((up > down) & (up > 0), up, 0.0)
     minus_dm = np.where((down > up) & (down > 0), down, 0.0)
@@ -120,7 +146,7 @@ def add_features(df):
 def precompute_actions(model, df, scaler):
     """Predict the action for every bar (obs = the 20 bars BEFORE the bar)."""
     scaled = scaler.transform(df[FEATURES])
-    stacked = np.hstack([scaled, df[['spread_cost']].values]).astype(np.float32)
+    stacked = np.hstack([scaled, df[['spread_cost', 'atr_14']].values]).astype(np.float32)
     actions = np.zeros(len(df), dtype=int)
     for i in range(WINDOW_SIZE, len(df)):
         obs = stacked[i - WINDOW_SIZE:i][None, ...]
@@ -129,8 +155,13 @@ def precompute_actions(model, df, scaler):
     return actions
 
 
-def simulate(df, actions, use_sl, seed=0):
-    """Replay the legacy trade rules bar by bar.
+def simulate(df, actions, sl_mode, seed=0):
+    """Replay the Always-In trade rules bar by bar (a trade is taken every
+    bar, direction from `actions`: 0=BUY, 1=SELL).
+
+    sl_mode: 'none' (no SL, as literally trained), 'atr' (trained SL = atr *
+    SL_MULTIPLIER, uncapped), or 'equity' (broker-side 5%-of-equity SL that
+    rl_trader.py actually deploys).
 
     A D1 bar cannot tell whether TP or SL was touched first when the bar's
     range covers both. For those ambiguous bars the outcome is drawn with the
@@ -144,27 +175,41 @@ def simulate(df, actions, use_sl, seed=0):
     ambiguous = 0
     for i in range(WINDOW_SIZE, len(df)):
         bar = df.iloc[i]
-        if actions[i] == 1:
-            entry = bar['open'] + SPREAD_COST
-            lot = min((balance / 100.0) * 0.01, MAX_LOT)
+        atr = bar['atr_14'] if not pd.isna(bar['atr_14']) else 1.0
+        lot = min((balance / 100.0) * 0.01, MAX_LOT)
+        tp_dist = min(atr * TP_MULTIPLIER, TP_CAP)
+
+        if sl_mode == 'none':
+            sl_dist = np.inf
+        elif sl_mode == 'atr':
+            sl_dist = atr * SL_MULTIPLIER
+        else:  # 'equity'
             sl_dist = (SL_EQUITY_PCT / 100.0) * balance / (lot * 100.0)
-            tp_price = entry + TP_PRICE_DIFF
-            sl_price = entry - sl_dist
-            hit_tp = bar['high'] >= tp_price
-            hit_sl = use_sl and bar['low'] <= sl_price
-            if hit_tp and hit_sl:
-                ambiguous += 1
-                p_win = sl_dist / (TP_PRICE_DIFF + sl_dist)
-                diff = TP_PRICE_DIFF if rng.random() < p_win else -sl_dist
-            elif hit_sl:
-                diff = -sl_dist
-            elif hit_tp:
-                diff = TP_PRICE_DIFF
-            else:
-                diff = bar['close'] - entry
-            pnl = diff * 100.0 * lot
-            balance += pnl
-            trade_pnls.append(pnl)
+
+        is_buy = actions[i] == 0
+        if is_buy:
+            entry = bar['open'] + SPREAD_COST
+            tp_price, sl_price = entry + tp_dist, entry - sl_dist
+            hit_tp, hit_sl = bar['high'] >= tp_price, bar['low'] <= sl_price
+        else:
+            entry = bar['open'] - SPREAD_COST
+            tp_price, sl_price = entry - tp_dist, entry + sl_dist
+            hit_tp, hit_sl = bar['low'] <= tp_price, bar['high'] >= sl_price
+
+        if hit_tp and hit_sl:
+            ambiguous += 1
+            p_win = sl_dist / (tp_dist + sl_dist) if np.isfinite(sl_dist) else 1.0
+            diff = tp_dist if rng.random() < p_win else -sl_dist
+        elif hit_sl:
+            diff = -sl_dist
+        elif hit_tp:
+            diff = tp_dist
+        else:
+            diff = (bar['close'] - entry) if is_buy else (entry - bar['close'])
+
+        pnl = diff * 100.0 * lot
+        balance += pnl
+        trade_pnls.append(pnl)
         curve.append(balance)
         if balance <= 0:
             break
@@ -174,12 +219,9 @@ def simulate(df, actions, use_sl, seed=0):
     return np.array(curve), np.array(trade_pnls)
 
 
-def report(label, df, curve, pnls):
-    dates = df.index[WINDOW_SIZE:WINDOW_SIZE + len(curve) - 1]
+def report(label, curve, pnls):
     print(f"\n=== {label} ===")
-    if len(dates):
-        print(f"Period:          {dates[0].date()} -> {dates[-1].date()} "
-              f"({len(dates)} bars, {len(pnls)} trades)")
+    print(f"Trades:          {len(pnls)}")
     if len(pnls) == 0:
         print("No trades taken.")
         return
@@ -203,20 +245,6 @@ def report(label, df, curve, pnls):
     print(f"Sharpe (ann.):   {sharpe:.2f}")
 
 
-def load_csv(path):
-    """Load OHLC data exported by export_data_mt5.py (or any CSV with
-    time,open,high,low,close,tick_volume[,spread_cost] columns)."""
-    df = pd.read_csv(path, parse_dates=['time'], index_col='time')
-    df.index = pd.to_datetime(df.index).tz_localize(None)
-    if 'spread_cost' not in df.columns:
-        df['spread_cost'] = SPREAD_COST
-    cols = ['open', 'high', 'low', 'close', 'tick_volume', 'spread_cost']
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise RuntimeError(f"CSV missing columns: {missing}")
-    return df[cols].dropna()
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--start', default='2023-01-01')
@@ -229,9 +257,10 @@ def main():
 
     print("Loading model and scaler...")
     model = PPO.load(os.path.join(BASE_DIR, "rl_model"))
-    scaler = joblib.load(os.path.join(BASE_DIR, "rl_scaler_d1_legacy.save"))
-    assert tuple(model.observation_space.shape) == (WINDOW_SIZE, 13), \
-        f"unexpected model obs {model.observation_space.shape}"
+    scaler = joblib.load(os.path.join(BASE_DIR, "rl_scaler.save"))
+    assert tuple(model.observation_space.shape) == (WINDOW_SIZE, 16), \
+        (f"unexpected model obs {model.observation_space.shape}, expected "
+         f"(20, 16) for the current Always-In env -- is rl_model.zip stale?")
     assert scaler.n_features_in_ == len(FEATURES), \
         f"scaler expects {scaler.n_features_in_} features, need {len(FEATURES)}"
 
@@ -251,43 +280,27 @@ def main():
     print("Predicting actions for every bar...")
     actions = precompute_actions(model, df, scaler)
     n_bars = len(df) - WINDOW_SIZE
-    print(f"BUY days: {actions.sum()} / {n_bars} ({actions.sum() / n_bars * 100:.0f}%)")
+    n_buy = (actions[WINDOW_SIZE:] == 0).sum()
+    print(f"BUY days: {n_buy}/{n_bars} ({n_buy / n_bars * 100:.0f}%), "
+          f"SELL days: {n_bars - n_buy}/{n_bars}")
 
-    windows = [
-        ('FULL WINDOW (in-sample)', df.index.min(), None),
-        ('2026 YTD (in-sample)', pd.Timestamp('2026-01-01'), None),
-        (f'OUT-OF-SAMPLE (after {TRAIN_CUTOFF} training date)',
-         pd.Timestamp(TRAIN_CUTOFF), None),
-    ]
-
-    results = {}
-    for label, start, end in windows:
-        # keep WINDOW_SIZE bars of history before the window for the obs
-        idx = df.index.searchsorted(start)
-        idx = max(idx - WINDOW_SIZE, 0)
-        sub = df.iloc[idx:]
-        sub_actions = actions[idx:]
-        if len(sub) <= WINDOW_SIZE:
-            print(f"\n=== {label} === skipped (not enough bars)")
-            continue
-        for sl_label, use_sl in [('no SL (as trained)', False),
-                                 ('with 5%-equity disaster SL (as deployed)', True)]:
-            curve, pnls = simulate(sub, sub_actions, use_sl)
-            report(f"{label} | {sl_label}", sub, curve, pnls)
-            results[(label, sl_label)] = (sub.index[WINDOW_SIZE:], curve)
+    sub = df
+    curves = {}
+    for sl_mode, label in [('none', 'no SL (as literally trained)'),
+                           ('atr', f'trained SL ({SL_MULTIPLIER}x ATR, uncapped)'),
+                           ('equity', f'broker-side {SL_EQUITY_PCT:.0f}%-equity SL (as deployed)')]:
+        curve, pnls = simulate(sub, actions, sl_mode)
+        report(label, curve, pnls)
+        curves[label] = (sub.index[WINDOW_SIZE:WINDOW_SIZE + len(curve) - 1], curve)
 
     try:
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        labels = [k for k in results if 'as deployed' in k[1]]
-        fig, axes = plt.subplots(len(labels), 1, figsize=(11, 3.5 * len(labels)))
-        if len(labels) == 1:
-            axes = [axes]
-        for ax, key in zip(axes, labels):
-            dates, curve = results[key]
+        fig, axes = plt.subplots(len(curves), 1, figsize=(11, 3.5 * len(curves)))
+        for ax, (label, (dates, curve)) in zip(axes, curves.items()):
             ax.plot(dates, curve[1:len(dates) + 1], color='green')
-            ax.set_title(f"{key[0]} — {key[1]}")
+            ax.set_title(label)
             ax.set_ylabel('Balance ($)')
             ax.grid(True)
         fig.tight_layout()
