@@ -44,7 +44,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_SYMBOL = "XAUUSD."
 WINDOW_SIZE = 20
-ACTION_NAMES = {0: "BUY", 1: "SELL"}
+ACTION_NAMES = {0: "BUY", 1: "SELL", 2: "FLAT"}  # 2 exists only for allow_flat models
 
 
 # --------------------------------------------------------------------------- data
@@ -269,7 +269,12 @@ def main(argv=None):
         signal.update({'action': action, 'side': side, 'action_probabilities': probs})
         print(f"\nforecast    : {side} (action={action})")
         if probs:
-            print(f"policy probs: BUY {probs[0]:.3f} / SELL {probs[1]:.3f}")
+            print("policy probs: " + " / ".join(
+                f"{ACTION_NAMES[i]} {p:.3f}" for i, p in enumerate(probs)))
+
+        if side == "FLAT":
+            print("\nthe agent chose to stay out today — nothing to place.")
+            return 0
 
         account = mt5.account_info()
         if account is None:

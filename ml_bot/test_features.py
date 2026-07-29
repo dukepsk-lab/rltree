@@ -107,6 +107,59 @@ def test_out_of_range_detection():
     print(f"ok  out-of-range detection flagged: {sorted(flagged)}")
 
 
+def _env_frame():
+    import joblib
+    df = F.add_indicators(synthetic_bars(300)).dropna()
+    df['dxy'], df['us10y'] = 100.0, 4.0
+    scaler = joblib.load(os.path.join(os.path.dirname(__file__), 'rl_scaler.save'))
+    return F.build_env_frame(df, scaler)
+
+
+def test_env_defaults_are_unchanged():
+    """The new TradingEnv options must not alter the original behaviour."""
+    from rl_env import TradingEnv
+
+    frame = _env_frame()
+    env = TradingEnv(frame, 20, 1.0, 2.0)
+    assert env.action_space.n == 2, env.action_space
+    env.reset(seed=0)
+    assert env.current_step == 20, 'default reset must start at window_size'
+    _obs, reward, _done, _trunc, info = env.step(0)
+    # usd reward mode: reward is the dollar P&L that moved the balance
+    assert abs(reward - (info['balance'] - 10000.0)) < 1e-6
+    print(f"ok  env defaults: Discrete(2), fixed start, usd reward ({reward:+.2f})")
+
+
+def test_flat_action_and_pct_reward():
+    from rl_env import TradingEnv
+
+    frame = _env_frame()
+    env = TradingEnv(frame, 20, 1.0, 2.0, allow_flat=True, reward_mode='pct')
+    assert env.action_space.n == 3, env.action_space
+    env.reset(seed=0)
+    _obs, reward, _done, _trunc, info = env.step(2)
+    assert reward == 0.0 and info['balance'] == 10000.0, (reward, info)
+
+    env.reset(seed=0)
+    _obs, reward, _done, _trunc, info = env.step(0)
+    expected_pct = (info['balance'] - 10000.0) / 10000.0 * 100.0
+    assert abs(reward - expected_pct) < 1e-6, (reward, expected_pct)
+    print(f"ok  flat action costs nothing; pct reward = {reward:+.3f}% of balance")
+
+
+def test_random_start_visits_more_than_one_trajectory():
+    from rl_env import TradingEnv
+
+    frame = _env_frame()
+    env = TradingEnv(frame, 20, 1.0, 2.0, random_start=True)
+    starts = set()
+    for seed in range(10):
+        env.reset(seed=seed)
+        starts.add(env.current_step)
+    assert len(starts) > 1, starts
+    print(f"ok  random_start produced {len(starts)} distinct episode starts")
+
+
 if __name__ == '__main__':
     failures = 0
     for name, fn in sorted(globals().items()):

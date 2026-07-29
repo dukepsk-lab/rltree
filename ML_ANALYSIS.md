@@ -29,6 +29,16 @@ Decoded straight from the artifacts (`python ml_bot/test_features.py` re-checks 
 `spread_cost`. So `rl_model.zip` was trained before `atr_14`/`day_of_week` were added, and the
 scaler next to it has since been replaced.
 
+Loading the model and feeding it the pipeline's observation reproduces it exactly:
+
+```
+>>> PPO.load('ml_bot/rl_model').observation_space
+Box(-inf, inf, (20, 13), float32)
+>>> model.predict(obs)          # obs.shape == (20, 16)
+ValueError: Error: Unexpected observation shape (20, 16) for Box environment,
+please use (20, 13) or (n_env, 20, 13) for the observation shape.
+```
+
 **Root cause — three trainers wrote the same file.**
 
 * `cnn_lstm_train.py:47` refitted a `MinMaxScaler` and wrote it to `ml_bot/rl_scaler.save`, with
@@ -138,7 +148,9 @@ All five are fixed in `rl_trader.py`, but prefer `d1_forecast.py` (§6) for a si
 |---|---|
 | `ml_bot/features.py` | Single source of truth for feature engineering, observation assembly, out-of-range detection and position sizing. No `MetaTrader5`/`torch` imports, so it is testable anywhere. `rl_train.py` re-exports from it |
 | `ml_bot/d1_forecast.py` | D1 forecast, and optionally the order. Dry-run by default |
-| `ml_bot/test_features.py` | Offline checks: observation layout matches the env's own column rule, the artifact mismatch is real, the risk cap behaves |
+| `ml_bot/train_d1.py` | Walk-forward training and out-of-sample evaluation; writes model, scaler and metadata from one run |
+| `ml_bot/rl_env.py` | Optional flat action, percent-of-balance reward, per-bar spread, drawdown penalty, random episode starts — all off by default |
+| `ml_bot/test_features.py` | Offline checks: observation layout matches the env's own column rule, the artifact mismatch is real, the risk cap behaves, the env's defaults are unchanged |
 | `ml_bot/rl_trader.py` | The five bugs in §2 fixed |
 | `ml_bot/xgboost_train.py`, `ml_bot/cnn_lstm_train.py` | Stop overwriting `rl_scaler.save`; fail loudly on a feature-count mismatch |
 | `ml_bot/rl_train.py` | Uses the shared feature module; writes `rl_model_meta.json` alongside the model |
@@ -167,17 +179,48 @@ Windows-only). Compared with `rl_trader.py` it:
   filling mode instead of assuming IOC, and refuses to open a second position on the same magic;
 * sends nothing without both `--live` and `--yes`.
 
+### `train_d1.py` — retraining
+
+```bash
+python ml_bot/train_d1.py --timesteps 300000        # walk-forward, then the final model
+python ml_bot/train_d1.py --folds 5 --no-final      # validation only, artifacts untouched
+python ml_bot/train_d1.py --synthetic --timesteps 3000   # offline smoke test, no MT5 needed
+```
+
+It fixes the three things that made the old numbers meaningless:
+
+* the scaler is fitted on **each fold's training slice only**, so test-period minima and maxima
+  never reach the training rows;
+* each fold trains strictly before its test window and is scored on unseen bars;
+* every fold is printed next to always-BUY, always-SELL, always-FLAT and the majority-class
+  direction rate.
+
+Defaults turn on the §5 fixes: a flat action, percent-of-balance reward, per-bar spread, a
+drawdown penalty and random episode starts. `--no-allow-flat --reward-mode usd --no-random-start`
+reproduces the old environment. `learning_rate` defaults to `3e-4` rather than the in-sample
+Optuna value of `3.36e-3`.
+
+**Read the direction-accuracy line, not the return line.** With 0.01 lot per \$100 the balance
+compounds ~1% per bar, so returns are lognormal — a handful of lucky paths dominate the mean and
+a run can print +800% with accuracy *below* the majority class. The smoke run on random-walk data
+does exactly that, which is the point: the script calls it correctly.
+
+```
+=== walk-forward summary (3 folds, out-of-sample) ===
+agent return      : median +813.53%   worst +216.35%   positive folds 3/3
+direction accuracy: 47.82%   majority class 52.34%   edge -4.52 points
+verdict           : NO directional edge — accuracy is at or below the majority class.
+                    Any positive return here is the compounding tail, not skill.
+```
+
 ## 7. To get a forecast worth acting on
 
-1. **Retrain the pair.** `python ml_bot/rl_train.py` writes `rl_model.zip`, `rl_scaler.save` and
-   `rl_model_meta.json` from one run. Until then §1 stands and `d1_forecast.py` will not trade.
-2. **Hold out real data.** Train on everything up to a cut-off, evaluate after it, and roll the
-   cut-off forward. Fit the scaler on the training slice only. Report accuracy against the
-   majority-class baseline — for daily gold direction, anything under ~53% out-of-sample is noise.
+1. **Retrain the pair on real broker data.** `python ml_bot/train_d1.py` writes `rl_model.zip`,
+   `rl_scaler.save` and `rl_model_meta.json` from one run. Until then §1 stands and
+   `d1_forecast.py` will not trade.
+2. **Judge it on the walk-forward edge.** For daily gold direction, anything under roughly
+   +2 points over the majority class, out-of-sample and stable across seeds, is noise.
 3. **Fix the representation before adding models.** Returns and ATR-normalized distances instead
-   of raw price levels; drop weekend bars; lag the macro series.
-4. **Give the agent a flat action and price the spread and drawdown into the reward.** Without
-   those, the environment guarantees a daily cost the policy cannot avoid, and blowing up the
-   account is nearly free.
-5. Then re-read `ANALYSIS_REPORT.md` §7: even a genuinely predictive model still has to clear the
+   of raw price levels; drop weekend bars; keep `--macro-lag-days 1`.
+4. Then re-read `ANALYSIS_REPORT.md` §7: even a genuinely predictive model still has to clear the
    ~0.2–0.3%/day cost of trading every session at this size.
