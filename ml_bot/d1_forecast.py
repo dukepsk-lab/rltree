@@ -52,11 +52,11 @@ ACTION_NAMES = {0: "BUY", 1: "SELL", 2: "FLAT"}  # 2 exists only for allow_flat 
 def fetch_closed_bars(mt5, symbol, timeframe, n_bars):
     """Closed D1 bars only, plus the broker's spread in price units."""
     info = mt5.symbol_info(symbol)
-    if info is None:
-        raise RuntimeError(f"symbol {symbol!r} not found in Market Watch")
-    if not info.visible:
+    if info is None or not info.visible:
         mt5.symbol_select(symbol, True)
         info = mt5.symbol_info(symbol)
+    if info is None:
+        raise RuntimeError(f"symbol {symbol!r} not found in Market Watch")
 
     # start_pos=1 skips the bar currently forming.
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, n_bars)

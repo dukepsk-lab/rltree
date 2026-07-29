@@ -1,0 +1,58 @@
+{
+  "features": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "tick_volume",
+    "sma_10",
+    "sma_20",
+    "rsi_14",
+    "adx_14",
+    "linreg_20",
+    "dxy",
+    "us10y",
+    "atr_14",
+    "day_of_week"
+  ],
+  "window_size": 20,
+  "observation_columns": [
+    "scaled_open",
+    "scaled_high",
+    "scaled_low",
+    "scaled_close",
+    "scaled_tick_volume",
+    "scaled_sma_10",
+    "scaled_sma_20",
+    "scaled_rsi_14",
+    "scaled_adx_14",
+    "scaled_linreg_20",
+    "scaled_dxy",
+    "scaled_us10y",
+    "scaled_atr_14",
+    "scaled_day_of_week",
+    "spread_cost",
+    "atr_14"
+  ],
+  "observation_shape": [
+    20,
+    16
+  ],
+  "action_space_n": 3,
+  "allow_flat": true,
+  "reward_mode": "pct",
+  "tp_multiplier": 1.0,
+  "sl_multiplier": 2.0,
+  "timesteps": 300000,
+  "bars": 3826,
+  "data": "XAUUSD.",
+  "macro_lag_days": 1,
+  "trained_at": "2026-07-29T16:07:30.520100+00:00",
+  "walk_forward": {
+    "folds": 4,
+    "mean_return_pct": -56.50106064032374,
+    "mean_always_buy_return_pct": -63.63044345264376,
+    "mean_direction_accuracy_pct": 51.3003300330033,
+    "mean_majority_class_pct": 54.03368528000375
+  }
+}
