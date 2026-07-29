@@ -224,3 +224,68 @@ verdict           : NO directional edge — accuracy is at or below the majority
    of raw price levels; drop weekend bars; keep `--macro-lag-days 1`.
 4. Then re-read `ANALYSIS_REPORT.md` §7: even a genuinely predictive model still has to clear the
    ~0.2–0.3%/day cost of trading every session at this size.
+
+## 8. The first real walk-forward run — and what it proved
+
+The first run on real data (3,826 D1 bars of `XAUUSD.`, 4 folds, 300k timesteps,
+`wf_report.json`) came back like this:
+
+| Fold | Test window | Return | Max DD | Dir. accuracy | Majority | Trades |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | 2019-02-28 → 2021-01-05 | −64.6% | 85.7% | 46.5% | 53.9% | ~395 |
+| 2 | 2021-01-06 → 2022-11-10 | −56.0% | 74.3% | 38.7% | 50.9% | ~192 |
+| 3 | 2022-11-11 → 2024-09-17 | +3.0% | 0.0% | 100.0% | 52.4% | **~1** |
+| 4 | 2024-09-18 → 2026-07-21 | **−108.4%** | **107.7%** | 20.0% | 58.9% | ~9 |
+
+Mean direction accuracy 51.30% against a majority class of 54.03% — **an edge of −2.7 points.**
+The agent is worse than always predicting the more common direction. There is no forecast here.
+
+Two things in that table matter more than the accuracy number.
+
+**Fold 4 ended with a balance of −\$844.15.** Not a drawdown — a negative account, from \$10,000,
+in 574 bars, having taken about nine trades. That is the sizing rule, not the model:
+
+```
+lot   = balance / 100 * 0.01 = balance * 1e-4
+P&L   = price_diff * 100 * lot = price_diff * balance * 0.01
+stop  = 2 * ATR  =>  loss = 2 * ATR percent of the account
+```
+
+| Gold ATR(14) | Win (TP capped at \$3) | One stop | Break-even win rate |
+|---:|---:|---:|---:|
+| \$15 | +3.0% | −30% | 90.9% |
+| \$50 | +3.0% | −100% | 97.1% |
+| \$100 | +3.0% | −200% | 98.5% |
+| \$150 | +3.0% | −300% | 99.0% |
+
+At 2020s gold volatility a single stop costs **1.6× to 3× the entire account**, and the strategy
+needs a 98–99% win rate merely to break even. That is precisely the shape of `log.txt`: 78
+consecutive wins, then one −\$130 day that ended the account. No model can be trained out of this
+— the payoff geometry is fixed before the model is consulted.
+
+**Folds 3 and 4 are 98.5–99.8% flat.** Given the flat action, the agent worked out that the
+correct move is not to play. It is the most sensible thing in the whole report.
+
+### What changed as a result
+
+* `TradingEnv` gained `sizing='risk'` (with `risk_pct`), which caps what a stop can cost exactly
+  the way `features.compute_order_plan` caps the live order. `train_d1.py` now defaults to it.
+  The old behaviour is still available as `--sizing mandate`. Previously the agent was *trained*
+  under ruinous sizing and then *served* through a 5% risk cap — two different games.
+* `score()` reports `trades` and `account_destroyed`, and the summary ignores accuracy from folds
+  with fewer than 30 directional trades. Fold 3's "100% accuracy" on roughly one trade was being
+  averaged into the headline edge; it no longer is.
+* The summary prints an explicit warning when any fold ends at or below zero.
+
+On the synthetic smoke test, switching to risk sizing takes max drawdown from 27–42% down to
+2.5–6.4% and returns from the absurd (+800%) to the plausible (+15–27%) — while still correctly
+reporting no directional edge on random-walk data.
+
+### Where that leaves the D1 model
+
+The retrained artifacts on the branch are internally consistent — `rl_model_meta.json` records
+`observation_shape [20, 16]`, `action_space_n 3`, 3,826 real bars — so `d1_forecast.py`'s
+compatibility gate passes and it will produce a forecast. **It should not be traded.** Its own
+walk-forward report says the direction accuracy is 2.7 points below the majority class, and one
+of the four folds destroyed the account. Retrain with `--sizing risk` and look at the edge line
+again before anything goes near a live order.

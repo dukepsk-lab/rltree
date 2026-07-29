@@ -94,6 +94,8 @@ def make_env(frame, args, *, random_start=False):
         use_bar_spread=args.use_bar_spread,
         dd_penalty=args.dd_penalty,
         random_start=random_start,
+        sizing=args.sizing,
+        risk_pct=args.risk_pct,
     )
 
 
@@ -115,20 +117,34 @@ def max_drawdown_pct(balances):
     return float((1 - balances / peak).max() * 100)
 
 
+MIN_TRADES_FOR_ACCURACY = 30
+
+
 def score(balances, actions, frame, window):
-    """Return %, max drawdown %, action mix, and directional accuracy."""
+    """Return %, max drawdown %, action mix, and directional accuracy.
+
+    `direction_accuracy_pct` is measured over directional actions only, so it is
+    meaningless when the agent stays flat almost all the time — a fold that takes
+    one trade and wins it reports 100%. `trades` is reported alongside so the
+    summary can ignore accuracy from folds with too few of them.
+    """
     traded = frame.iloc[window:window + len(actions)]
     up = (traded['close'] > traded['open']).values
     mask = actions < 2
-    correct = ((actions[mask] == 0) == up[mask]).mean() * 100 if mask.any() else float('nan')
+    n_trades = int(mask.sum())
+    correct = ((actions[mask] == 0) == up[mask]).mean() * 100 if n_trades else float('nan')
     return {
         'final_balance': float(balances[-1]),
         'return_pct': float((balances[-1] / balances[0] - 1) * 100),
         'max_dd_pct': max_drawdown_pct(balances),
+        'account_destroyed': bool(balances[-1] <= 0),
+        'bars': int(len(actions)),
+        'trades': n_trades,
         'buy_pct': float((actions == 0).mean() * 100),
         'sell_pct': float((actions == 1).mean() * 100),
         'flat_pct': float((actions == 2).mean() * 100),
         'direction_accuracy_pct': float(correct),
+        'accuracy_is_meaningful': n_trades >= MIN_TRADES_FOR_ACCURACY,
         'majority_class_pct': float(max(up.mean(), 1 - up.mean()) * 100),
     }
 
@@ -188,6 +204,11 @@ def build_parser():
     p.add_argument('--reward-mode', choices=['usd', 'pct'], default='pct')
     p.add_argument('--use-bar-spread', action='store_true', default=True)
     p.add_argument('--no-use-bar-spread', dest='use_bar_spread', action='store_false')
+    p.add_argument('--sizing', choices=['mandate', 'risk'], default='risk',
+                   help="'mandate' = 0.01 lot per $100 (one stop costs 2*ATR%% of the "
+                        "account); 'risk' additionally caps the loss at --risk-pct, "
+                        "matching what d1_forecast.py sends")
+    p.add_argument('--risk-pct', type=float, default=5.0)
     p.add_argument('--dd-penalty', type=float, default=0.05)
     p.add_argument('--random-start', action='store_true', default=True)
     p.add_argument('--no-random-start', dest='random_start', action='store_false')
@@ -247,8 +268,11 @@ def main(argv=None):
         res['test_end'] = str(df.index[test_end - 1].date())
         results.append(res)
 
+        acc_note = "" if res['accuracy_is_meaningful'] else "  <- too few trades to mean anything"
+        destroyed = "  ACCOUNT DESTROYED" if res['account_destroyed'] else ""
         print(f"    agent   {res['return_pct']:+8.2f}%   maxDD {res['max_dd_pct']:5.1f}%   "
-              f"dir.acc {res['direction_accuracy_pct']:5.1f}% (majority {res['majority_class_pct']:.1f}%)")
+              f"dir.acc {res['direction_accuracy_pct']:5.1f}% (majority {res['majority_class_pct']:.1f}%) "
+              f"on {res['trades']} trades{acc_note}{destroyed}")
         print(f"    always-BUY {res['always_buy_return_pct']:+8.2f}%   "
               f"always-SELL {res['always_sell_return_pct']:+8.2f}%"
               + (f"   always-FLAT {res['always_flat_return_pct']:+.2f}%" if args.allow_flat else ""))
@@ -256,10 +280,14 @@ def main(argv=None):
 
     agent = np.array([r['return_pct'] for r in results])
     buy = np.array([r['always_buy_return_pct'] for r in results])
-    acc = np.array([r['direction_accuracy_pct'] for r in results])
     maj = np.array([r['majority_class_pct'] for r in results])
+    destroyed = int(sum(r['account_destroyed'] for r in results))
 
-    edge = float(np.nanmean(acc) - maj.mean())
+    # Accuracy only counts from folds that actually traded enough to measure it.
+    scored = [r for r in results if r['accuracy_is_meaningful']]
+    acc = np.array([r['direction_accuracy_pct'] for r in scored]) if scored else np.array([])
+    scored_maj = np.array([r['majority_class_pct'] for r in scored]) if scored else np.array([])
+    edge = float(acc.mean() - scored_maj.mean()) if scored else float('nan')
     beats_buy = int((agent > buy).sum())
 
     print("\n=== walk-forward summary ({} folds, out-of-sample) ===".format(args.folds))
@@ -267,16 +295,28 @@ def main(argv=None):
           f"positive folds {int((agent > 0).sum())}/{len(agent)}")
     print(f"always-BUY return : median {np.median(buy):+.2f}%   "
           f"agent beats it in {beats_buy}/{len(agent)} folds")
-    print(f"direction accuracy: {np.nanmean(acc):.2f}%   majority class {maj.mean():.2f}%   "
-          f"edge {edge:+.2f} points")
+    if scored:
+        print(f"direction accuracy: {acc.mean():.2f}%   majority class {scored_maj.mean():.2f}%   "
+              f"edge {edge:+.2f} points   ({len(scored)}/{len(results)} folds had "
+              f">= {MIN_TRADES_FOR_ACCURACY} trades)")
+    else:
+        print(f"direction accuracy: not measurable — no fold took {MIN_TRADES_FOR_ACCURACY}+ trades")
     print(f"max drawdown      : median {np.median([r['max_dd_pct'] for r in results]):.1f}%   "
           f"worst {max(r['max_dd_pct'] for r in results):.1f}%")
+    if destroyed:
+        print(f"*** {destroyed}/{len(results)} folds ended with a balance of zero or less. "
+              f"With --sizing mandate a single stop at {args.sl_mult}xATR costs "
+              f"{args.sl_mult:.0f}*ATR percent of the account; re-run with --sizing risk. ***")
 
     # Returns here compound at ~1% of balance per bar, so their distribution is
     # lognormal: the mean is dominated by a handful of lucky paths and says
     # almost nothing. Judge on directional edge and on how many folds beat
     # always-BUY, not on the headline percentage.
-    if edge <= 0:
+    if not scored:
+        print("verdict           : the agent stayed flat almost the whole time. Under "
+              "--sizing mandate that is the rational response, not a bug — see the "
+              "payoff note in ML_ANALYSIS.md §8.")
+    elif edge <= 0:
         print("verdict           : NO directional edge — accuracy is at or below the "
               "majority class. Any positive return here is the compounding tail, not skill.")
     elif beats_buy <= len(agent) // 2:
@@ -318,6 +358,8 @@ def main(argv=None):
         'action_space_n': int(env.action_space.n),
         'allow_flat': args.allow_flat,
         'reward_mode': args.reward_mode,
+        'sizing': args.sizing,
+        'risk_pct': args.risk_pct,
         'tp_multiplier': args.tp_mult,
         'sl_multiplier': args.sl_mult,
         'timesteps': args.timesteps,
