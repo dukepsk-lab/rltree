@@ -5,7 +5,6 @@ from datetime import datetime
 
 import joblib
 import numpy as np
-import pandas as pd
 import MetaTrader5 as mt5
 from stable_baselines3 import PPO
 
@@ -14,38 +13,43 @@ sys.path.insert(0, BASE_DIR)
 
 from rl_train import fetch_data, add_features
 
-# NOTE: the committed rl_model.zip (1M-step PPO) was trained on the legacy
-# TradingEnv (git 6150c7d): long-only, action 1 = BUY at the daily open,
-# flat TP = entry + $3.00, forced close at end of day, no SL, dynamic lot
-# 0.01 per $100 equity capped at 10. Its observation is 12 MinMax-scaled
-# features + raw spread_cost => shape (20, 13). Its matching scaler is
-# rl_scaler_d1_legacy.save (the first 12 columns of rl_scaler.save, which
-# was fitted the same day on the same broker data; the committed
-# rl_scaler_legacy.save is a 10-feature scaler from an older model and
-# does NOT match). This trader reproduces exactly that behavior and
-# adds a broker-side disaster SL the training env did not have.
-# If you retrain with the current rl_train.py/rl_env.py (Always-In, 16
-# features), update SCALED_FEATURES/RAW_FEATURES, SCALER_FILE and the
-# action mapping below.
+# Matches the CURRENT rl_env.py / rl_train.py (Always-In strategy):
+#   - observation: 20 x (14 MinMax-scaled features + raw spread_cost + raw
+#     atr_14) = shape (20, 16)
+#   - action 0 = BUY, action 1 = SELL -- a position is opened EVERY bar,
+#     there is no flat/skip state
+#   - TP = min(atr * TP_MULTIPLIER, $3.00), SL (in training) = atr *
+#     SL_MULTIPLIER with NO cap
+#   - dynamic lot 0.01 per $100 equity, capped at 10 lots, $100/oz/lot
+#     (i.e. $1 price move = $100 * lot_size)
+#
+# IMPORTANT: the trained SL (atr * 2.0, uncapped) is not safe to send to a
+# broker at this position sizing. At equity $10,000 (lot 1.0), a $100 ATR
+# gives an SL distance of $200 -> a $20,000 loss, 200% of equity, in one
+# bar. This trader instead attaches a broker-side SL sized as a % of
+# equity (SL_EQUITY_PCT) -- the deployed risk is therefore NOT identical
+# to what the agent was trained against; see backtest_offline.py for a
+# side-by-side simulation of both.
 
 # --- Configuration ---
 SYMBOL = "XAUUSD."
 TIMEFRAME = mt5.TIMEFRAME_D1
 MAGIC_NUMBER = 999999
 WINDOW_SIZE = 20
-TP_PRICE_DIFF = 3.00      # flat $ TP distance, must match legacy training
-# Disaster stop as % of equity (not part of the trained policy). At the
-# mandated sizing (0.01 lot per $100) a $1/oz move is ~1% of equity, so an
-# ATR-based stop (~2xATR = $130) would exceed 100% of equity in one bar.
-SL_EQUITY_PCT = 5.0
+TP_MULTIPLIER = 1.0    # must match TP_MULTIPLIER in rl_train.py
+TP_CAP = 3.00          # env caps TP distance at $3.00 (rl_env.py)
+SL_EQUITY_PCT = 5.0    # broker-side disaster stop, see note above
 MAX_LOT = 10.0
 RETRY_SECONDS = 300
 MODEL_FILE = "rl_model"
-SCALER_FILE = "rl_scaler_d1_legacy.save"
+SCALER_FILE = "rl_scaler.save"
 
+# 14 scaled inputs; the model additionally sees raw spread_cost and atr_14
+# (see prepare_rl_data in rl_train.py / feature_cols in rl_env.py)
 SCALED_FEATURES = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10',
-                   'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y']
-RAW_FEATURES = ['spread_cost']
+                   'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y',
+                   'atr_14', 'day_of_week']
+RAW_FEATURES = ['spread_cost', 'atr_14']
 
 
 def init_mt5():
@@ -56,8 +60,6 @@ def init_mt5():
 
 
 def build_obs(df, scaler):
-    """(1, WINDOW_SIZE, 13) observation exactly as in legacy training:
-    12 MinMax-scaled features followed by raw spread_cost."""
     scaled = scaler.transform(df[SCALED_FEATURES])
     raw = df[RAW_FEATURES].values
     stacked = np.hstack([scaled, raw])
@@ -103,7 +105,7 @@ def close_all_positions(symbol, magic):
 
 
 def compute_lot(symbol_info, equity):
-    # Legacy sizing: 0.01 lot per $100 of equity, capped
+    # Mandated sizing: 0.01 lot per $100 of equity
     lot = (equity / 100.0) * 0.01
     lot = min(lot, MAX_LOT)
     step = symbol_info.volume_step or 0.01
@@ -112,7 +114,7 @@ def compute_lot(symbol_info, equity):
     return round(lot, 2)
 
 
-def open_trade(symbol):
+def open_trade(symbol, action_type, atr):
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         print(f"Symbol {symbol} not found.")
@@ -128,10 +130,9 @@ def open_trade(symbol):
         print("No tick data; skipping entry.")
         return
 
-    price = tick.ask
     lot_size = compute_lot(symbol_info, account_info.equity)
 
-    tp_dist = TP_PRICE_DIFF
+    tp_dist = min(atr * TP_MULTIPLIER, TP_CAP)
     # price distance that loses SL_EQUITY_PCT% of equity at this lot size
     contract = symbol_info.trade_contract_size or 100.0
     sl_dist = (SL_EQUITY_PCT / 100.0) * account_info.equity / (lot_size * contract)
@@ -140,17 +141,28 @@ def open_trade(symbol):
     tp_dist = max(tp_dist, min_stop)
     sl_dist = max(sl_dist, min_stop)
 
+    if action_type == "BUY":
+        price = tick.ask
+        tp = price + tp_dist
+        sl = price - sl_dist
+        order_type = mt5.ORDER_TYPE_BUY
+    else:
+        price = tick.bid
+        tp = price - tp_dist
+        sl = price + sl_dist
+        order_type = mt5.ORDER_TYPE_SELL
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
         "volume": lot_size,
-        "type": mt5.ORDER_TYPE_BUY,
+        "type": order_type,
         "price": price,
-        "sl": price - sl_dist,
-        "tp": price + tp_dist,
+        "sl": sl,
+        "tp": tp,
         "deviation": 20,
         "magic": MAGIC_NUMBER,
-        "comment": "RL_Agent_BUY",
+        "comment": f"RL_Agent_{action_type}",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
@@ -160,8 +172,8 @@ def open_trade(symbol):
         code = result.retcode if result else mt5.last_error()
         print(f"Order send failed, retcode={code}")
     else:
-        print(f"BUY order sent! Ticket: {result.order}, Lot: {lot_size}, "
-              f"TP: {price + tp_dist:.2f}, SL: {price - sl_dist:.2f}")
+        print(f"{action_type} order sent! Ticket: {result.order}, Lot: {lot_size}, "
+              f"TP_dist: {tp_dist:.2f}, SL_dist: {sl_dist:.2f}")
 
 
 def wait_for_new_bar(current_bar_time):
@@ -207,7 +219,9 @@ def main():
         print(f"--- New Bar Started: {datetime.now().strftime('%H:%M:%S')} ---")
 
         try:
-            # Legacy behavior: position never held across the daily bar
+            # Env is Always-In (a position is opened every bar and always
+            # closed by EOD/TP/SL), so any leftover position at this point
+            # is a stale one from a previous crash/restart -- clear it.
             close_all_positions(SYMBOL, MAGIC_NUMBER)
 
             df = fetch_data(SYMBOL, TIMEFRAME, WINDOW_SIZE + 60)
@@ -225,13 +239,14 @@ def main():
             obs = build_obs(df, scaler)
             action, _states = model.predict(obs, deterministic=True)
             action_idx = int(action[0])
+            atr = float(df['atr_14'].iloc[-1])
 
-            # Legacy env: action 1 = BUY at open, action 0 = Flat/Skip the day
-            if action_idx == 1:
+            if action_idx == 0:
                 print("RL Agent decided to: BUY")
-                open_trade(SYMBOL)
+                open_trade(SYMBOL, "BUY", atr)
             else:
-                print("RL Agent decided to: HOLD/FLAT")
+                print("RL Agent decided to: SELL")
+                open_trade(SYMBOL, "SELL", atr)
         except Exception as e:
             print(f"Error in trading loop: {e}; retrying in {RETRY_SECONDS}s.")
             time.sleep(RETRY_SECONDS)
