@@ -92,6 +92,11 @@ def get_ensemble_action(obs, rl_model, cnn_model, xgb_model, ai_levels, today_da
 
 
 from rl_train import fetch_data, add_features
+from features import build_observation
+
+# For a single forecast (with a compatibility gate, a per-trade risk cap and a
+# dry-run default) prefer `python ml_bot/d1_forecast.py`. This module is the
+# always-on loop version and has no risk cap beyond the ATR stop.
 
 # --- Configuration ---
 SYMBOL = "XAUUSD."
@@ -99,7 +104,8 @@ TIMEFRAME = mt5.TIMEFRAME_D1
 MAGIC_NUMBER = 999999
 LOT_SIZE = 0.01
 WINDOW_SIZE = 20
-TP_PRICE_DIFF = 0.01
+TP_MULTIPLIER = 1.0
+SL_MULTIPLIER = 2.0
 
 def init_mt5():
     if not mt5.initialize():
@@ -194,7 +200,9 @@ def open_trade(symbol, action_type, tp_multiplier, sl_multiplier):
         "sl": sl,
         "tp": tp,
         "deviation": 20,
-        "magic": 234000,
+        # Must match MAGIC_NUMBER, otherwise close_all_positions() never finds
+        # the positions this function opens and they are held indefinitely.
+        "magic": MAGIC_NUMBER,
         "comment": f"RL_Agent_{action_type}",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
@@ -206,9 +214,19 @@ def open_trade(symbol, action_type, tp_multiplier, sl_multiplier):
     else:
         print(f"Order sent successfully! Ticket: {result.order}, Volume: {lot_size}, TP_dist: {tp_dist:.2f}, SL_dist: {sl_dist:.2f}")
 
+def wait_for_new_bar(current_bar_time):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Waiting for the next D1 bar to open...")
+    while True:
+        rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, 1)
+        if rates is not None and len(rates) > 0:
+            latest_time = rates[0]['time']
+            if latest_time != current_bar_time:
+                return latest_time
+        time.sleep(60)
+
 def main():
     init_mt5()
-    
+
     print("Loading RL Model and Scaler...")
     try:
         model = PPO.load("ml_bot/rl_model")
@@ -216,36 +234,45 @@ def main():
     except Exception as e:
         print(f"Failed to load model or scaler: {e}")
         return
-        
+
     print("--- RL Live Trading Loop Started ---")
-    
+
     initial_rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, 1)
     current_bar_time = initial_rates[0]['time'] if initial_rates is not None else 0
-    
+
     current_bar_time = wait_for_new_bar(current_bar_time)
-    
+
     while True:
         print(f"--- New Bar Started: {datetime.now().strftime('%H:%M:%S')} ---")
-        
+
         close_all_positions(SYMBOL, MAGIC_NUMBER)
-        
-        df = fetch_data(SYMBOL, TIMEFRAME, WINDOW_SIZE + 40)
-        df = add_features(df).dropna()
-        
-        features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14', 'day_of_week']
-        scaled_data = scaler.transform(df[features])
-        
-        obs = np.array([scaled_data[-WINDOW_SIZE:]], dtype=np.float32)
-        
+
+        # +1 bar because the last row returned by fetch_data is the bar currently
+        # forming; the policy was only ever trained on completed bars.
+        df = fetch_data(SYMBOL, TIMEFRAME, WINDOW_SIZE + 41)
+        df = add_features(df).dropna().iloc[:-1]
+
+        # Observation layout must match TradingEnv: scaled features + the raw
+        # spread_cost / atr_14 columns, in the env's own column order.
+        obs, _cols = build_observation(df, scaler, WINDOW_SIZE)
+
+        expected = tuple(model.observation_space.shape)
+        if tuple(obs.shape) != expected:
+            print(f"Model/scaler mismatch: policy expects {expected}, pipeline built {obs.shape}. "
+                  f"Retrain with rl_train.py. Not trading.")
+            return
+
         action, _states = model.predict(obs, deterministic=True)
-        action_idx = action[0]
-        
-        if action_idx == 1:
+        action_idx = int(action)
+
+        # TradingEnv convention: 0 = BUY, 1 = SELL. There is no flat action.
+        if action_idx == 0:
             print("RL Agent decided to: BUY")
-            open_trade(SYMBOL, "BUY", tp_price_diff=TP_PRICE_DIFF)
+            open_trade(SYMBOL, "BUY", TP_MULTIPLIER, SL_MULTIPLIER)
         else:
-            print("RL Agent decided to: HOLD/FLAT")
-            
+            print("RL Agent decided to: SELL")
+            open_trade(SYMBOL, "SELL", TP_MULTIPLIER, SL_MULTIPLIER)
+
         current_bar_time = wait_for_new_bar(current_bar_time)
 
 if __name__ == "__main__":

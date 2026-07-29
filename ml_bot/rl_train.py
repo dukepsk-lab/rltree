@@ -1,12 +1,15 @@
 import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from rl_env import TradingEnv
+# Feature engineering lives in features.py so training and live serving cannot
+# drift apart. Re-exported here because the other scripts import it from rl_train.
+from features import FEATURES, add_macro_data, add_features
 import os
+import json
 import joblib
 
 # --- Configuration ---
@@ -43,75 +46,13 @@ def fetch_data(symbol, timeframe, n_bars):
     
     return df[['open', 'high', 'low', 'close', 'tick_volume', 'spread_cost']]
 
-def add_macro_data(df):
-    start_date = df.index.min()
-    end_date = df.index.max() + pd.Timedelta(days=1)
-    
-    # Fetch DXY and US10Y silently
-    dxy = yf.download('DX-Y.NYB', start=start_date, end=end_date, progress=False)['Close']
-    us10y = yf.download('^TNX', start=start_date, end=end_date, progress=False)['Close']
-    
-    # Ensure they are Series
-    if isinstance(dxy, pd.DataFrame): dxy = dxy.iloc[:, 0]
-    if isinstance(us10y, pd.DataFrame): us10y = us10y.iloc[:, 0]
-    
-    macro_df = pd.DataFrame({'dxy': dxy, 'us10y': us10y})
-    
-    # tz-localize macro data to None since MT5 is naive
-    if macro_df.index.tz is not None:
-        macro_df.index = macro_df.index.tz_localize(None)
-    
-    # Merge and forward fill for holidays/weekends
-    df = df.join(macro_df, how='left')
-    df['dxy'] = df['dxy'].ffill().bfill()
-    df['us10y'] = df['us10y'].ffill().bfill()
-    
-    return df
-
-def add_features(df):
-    df = df.copy()
-    df = add_macro_data(df)
-    
-    df['sma_10'] = df['close'].rolling(window=10).mean()
-    df['sma_20'] = df['close'].rolling(window=20).mean()
-    
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / (loss + 1e-9)
-    df['rsi_14'] = 100 - (100 / (1 + rs))
-    
-    high, low, close = df['high'], df['low'], df['close']
-    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-    df['atr_14'] = tr.rolling(14).mean()
-    df['day_of_week'] = df.index.dayofweek
-    up, down = high - high.shift(), low.shift() - low
-    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
-    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
-    tr_14 = tr.rolling(14).sum()
-    plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(14).sum() / (tr_14 + 1e-9))
-    minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(14).sum() / (tr_14 + 1e-9))
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)
-    df['adx_14'] = dx.rolling(14).mean()
-    
-    window = 20
-    x = np.arange(window)
-    sum_x, sum_x2 = x.sum(), (x**2).sum()
-    denom = window * sum_x2 - sum_x**2
-    def slope_func(y):
-        return (window * (x * y).sum() - sum_x * y.sum()) / denom
-    df['linreg_20'] = df['close'].rolling(window=window).apply(slope_func, raw=True)
-    
-    return df
-
 def prepare_rl_data(df):
     df = add_features(df).dropna()
-    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14', 'day_of_week']
-    
+
     scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(df[features])
-    
-    scaled_df = pd.DataFrame(scaled_data, columns=[f"scaled_{f}" for f in features], index=df.index)
+    scaled_data = scaler.fit_transform(df[FEATURES])
+
+    scaled_df = pd.DataFrame(scaled_data, columns=[f"scaled_{f}" for f in FEATURES], index=df.index)
     final_df = pd.concat([scaled_df, df[['open', 'high', 'low', 'close', 'spread_cost', 'atr_14']]], axis=1)
     return final_df, scaler
 
@@ -141,9 +82,27 @@ def main():
                 device='auto', policy_kwargs=policy_kwargs)
     
     model.learn(total_timesteps=TIMESTEPS)
-    
+
     model.save("ml_bot/rl_model")
-    print("Training complete! Model saved as rl_model.zip")
+
+    # Record what this model was actually trained on. d1_forecast.py checks this
+    # so a model/scaler pair from different feature sets is rejected loudly
+    # instead of producing a shape error (or worse, a silently wrong forecast).
+    meta = {
+        "features": FEATURES,
+        "window_size": WINDOW_SIZE,
+        "observation_columns": [c for c in env.get_attr("feature_cols")[0]],
+        "observation_shape": list(env.observation_space.shape),
+        "tp_multiplier": TP_MULTIPLIER,
+        "sl_multiplier": SL_MULTIPLIER,
+        "timesteps": TIMESTEPS,
+        "bars": len(rl_df),
+        "trained_at": pd.Timestamp.utcnow().isoformat(),
+    }
+    with open("ml_bot/rl_model_meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+    print("Training complete! Model saved as rl_model.zip (+ rl_model_meta.json)")
 
 if __name__ == "__main__":
     main()

@@ -4,7 +4,7 @@ import numpy as np
 import xgboost as xgb
 import joblib
 from rl_train import fetch_data, add_features
-from sklearn.preprocessing import MinMaxScaler
+from features import FEATURES
 from sklearn.metrics import accuracy_score
 import MetaTrader5 as mt5
 
@@ -25,17 +25,20 @@ def main():
         return
         
     df = add_features(df).dropna()
-    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14', 'day_of_week']
-    
-    # Use the scaler saved by cnn_lstm_train.py or create one
-    try:
-        scaler = joblib.load('ml_bot/rl_scaler.save')
-        scaled_data = scaler.transform(df[features])
-    except:
-        scaler = MinMaxScaler()
-        scaled_data = scaler.fit_transform(df[features])
-        joblib.dump(scaler, 'ml_bot/rl_scaler.save')
-    
+    features = FEATURES
+
+    # Previously a bare `except:` here refitted the scaler and overwrote
+    # rl_scaler.save whenever transform() raised — silently breaking the PPO
+    # model that had been trained against the old one (ML_ANALYSIS.md #1).
+    # Fail loudly instead; rl_train.py is the only writer of this file.
+    scaler = joblib.load('ml_bot/rl_scaler.save')
+    if scaler.n_features_in_ != len(features):
+        raise SystemExit(
+            f"rl_scaler.save was fitted on {scaler.n_features_in_} features, this script "
+            f"needs {len(features)}. Re-run rl_train.py first so the scaler matches."
+        )
+    scaled_data = scaler.transform(df[features])
+
     X, y = [], []
     for i in range(WINDOW_SIZE, len(scaled_data) - 1):
         # Flatten the window for XGBoost (WINDOW_SIZE * NUM_FEATURES)
