@@ -6,7 +6,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, LSTM, Dense, Dropout, Input
 import joblib
 from rl_train import fetch_data, add_features
-from sklearn.preprocessing import MinMaxScaler
+from features import FEATURES
 import MetaTrader5 as mt5
 
 SYMBOL = "XAUUSD."
@@ -40,12 +40,19 @@ def main():
         return
         
     df = add_features(df).dropna()
-    features = ['open', 'high', 'low', 'close', 'tick_volume', 'sma_10', 'sma_20', 'rsi_14', 'adx_14', 'linreg_20', 'dxy', 'us10y', 'atr_14', 'day_of_week']
-    
-    scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(df[features])
-    joblib.dump(scaler, 'ml_bot/rl_scaler.save') # Overwrite global scaler with 14 features
-    
+    features = FEATURES
+
+    # rl_train.py owns rl_scaler.save. Refitting and overwriting it here would
+    # silently invalidate rl_model.zip, which is how the committed artifacts
+    # ended up incompatible (ML_ANALYSIS.md #1). Reuse it, or say why we can't.
+    scaler = joblib.load('ml_bot/rl_scaler.save')
+    if scaler.n_features_in_ != len(features):
+        raise SystemExit(
+            f"rl_scaler.save was fitted on {scaler.n_features_in_} features, this script "
+            f"needs {len(features)}. Re-run rl_train.py first so the scaler matches."
+        )
+    scaled_data = scaler.transform(df[features])
+
     X, y = [], []
     for i in range(WINDOW_SIZE, len(scaled_data) - 1): # -1 because we predict the NEXT day
         X.append(scaled_data[i - WINDOW_SIZE:i])
