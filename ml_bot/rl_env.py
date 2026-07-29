@@ -13,7 +13,8 @@ class TradingEnv(gym.Env):
 
     def __init__(self, df, window_size=20, tp_multiplier=1.0, sl_multiplier=1.0,
                  allow_flat=False, reward_mode='usd', use_bar_spread=False,
-                 dd_penalty=0.0, ruin_penalty=100.0, random_start=False):
+                 dd_penalty=0.0, ruin_penalty=100.0, random_start=False,
+                 sizing='mandate', risk_pct=5.0):
         """
         The keyword arguments after `sl_multiplier` all default to the original
         behaviour, so existing scripts are unaffected. `train_d1.py` turns them on:
@@ -28,6 +29,12 @@ class TradingEnv(gym.Env):
                         every reward, so drawdown has a price.
         random_start    start each episode at a random bar instead of always the
                         first one, so PPO sees more than a single trajectory.
+        sizing          'mandate' is the repo's 0.01 lot per $100 rule, under which
+                        one stop at 2xATR costs 2*ATR percent of the account — 160%
+                        to 300% at 2020s gold ATR, i.e. the account cannot survive a
+                        single loss. 'risk' additionally shrinks the lot so a stop
+                        costs at most risk_pct, matching what d1_forecast.py will
+                        actually send. Train on the game you intend to play.
         """
         super(TradingEnv, self).__init__()
 
@@ -42,6 +49,8 @@ class TradingEnv(gym.Env):
         self.dd_penalty = dd_penalty
         self.ruin_penalty = ruin_penalty
         self.random_start = random_start
+        self.sizing = sizing
+        self.risk_pct = risk_pct
 
         # We need atr_14 in the features, but also in the raw data
         # feature_cols are all columns except non-features
@@ -108,6 +117,13 @@ class TradingEnv(gym.Env):
         # Capped dynamic TP and SL
         tp_dist = min(atr * self.tp_multiplier, 3.00)
         sl_dist = atr * self.sl_multiplier
+
+        if self.sizing == 'risk' and sl_dist > 0:
+            # Cap the loss a stop can inflict, the same way features.compute_order_plan
+            # sizes the live order. Without this the mandated lot risks 2*ATR percent
+            # of the account on every trade.
+            max_lot = (self.balance * self.risk_pct / 100.0) / (sl_dist * 100.0)
+            lot_size = min(lot_size, max_lot)
 
         if action == 0: # BUY
             entry_price = open_price + spread_cost

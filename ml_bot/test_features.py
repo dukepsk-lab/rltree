@@ -147,6 +147,30 @@ def test_flat_action_and_pct_reward():
     print(f"ok  flat action costs nothing; pct reward = {reward:+.3f}% of balance")
 
 
+def test_mandate_sizing_can_lose_more_than_the_account():
+    """One stop at 2xATR costs 2*ATR percent of equity under the repo's sizing rule."""
+    from rl_env import TradingEnv
+
+    frame = _env_frame()
+    worst = {}
+    for sizing in ('mandate', 'risk'):
+        env = TradingEnv(frame, 20, 1.0, 2.0, reward_mode='pct', sizing=sizing, risk_pct=5.0)
+        losses = []
+        for action in (0, 1):
+            env.reset(seed=0)
+            for _ in range(40):
+                _o, reward, done, _t, _i = env.step(action)
+                losses.append(reward)
+                if done:
+                    break
+        worst[sizing] = min(losses)
+
+    assert worst['mandate'] < -100, f"expected a >100% single-bar loss, got {worst['mandate']}"
+    assert worst['risk'] >= -5.0 - 1e-6, f"risk sizing leaked past the cap: {worst['risk']}"
+    print(f"ok  worst single bar: mandate {worst['mandate']:.1f}% of equity, "
+          f"risk-capped {worst['risk']:.1f}%")
+
+
 def test_random_start_visits_more_than_one_trajectory():
     from rl_env import TradingEnv
 
