@@ -41,18 +41,20 @@
   "action_space_n": 3,
   "allow_flat": true,
   "reward_mode": "pct",
+  "sizing": "risk",
+  "risk_pct": 5.0,
   "tp_multiplier": 1.0,
   "sl_multiplier": 2.0,
   "timesteps": 300000,
-  "bars": 3826,
+  "bars": 3832,
   "data": "XAUUSD.",
   "macro_lag_days": 1,
-  "trained_at": "2026-07-29T16:07:30.520100+00:00",
+  "trained_at": "2026-07-29T19:02:30.166966+00:00",
   "walk_forward": {
     "folds": 4,
-    "mean_return_pct": -56.50106064032374,
-    "mean_always_buy_return_pct": -63.63044345264376,
-    "mean_direction_accuracy_pct": 51.3003300330033,
-    "mean_majority_class_pct": 54.03368528000375
+    "mean_return_pct": -16.02528170276345,
+    "mean_always_buy_return_pct": -20.35482556239713,
+    "mean_direction_accuracy_pct": 49.124480320178776,
+    "mean_majority_class_pct": 53.65523465703971
   }
 }
