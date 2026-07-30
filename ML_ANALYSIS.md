@@ -289,3 +289,74 @@ compatibility gate passes and it will produce a forecast. **It should not be tra
 walk-forward report says the direction accuracy is 2.7 points below the majority class, and one
 of the four folds destroyed the account. Retrain with `--sizing risk` and look at the edge line
 again before anything goes near a live order.
+
+## 9. The second run, with risk sizing — the question is settled
+
+`wf_report2.json`: same 4 folds, 3,832 bars, `--sizing risk --risk-pct 5`.
+
+| Fold | Test window | Return | Max DD | Dir. accuracy | Majority | Trades | always-BUY |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 1 | 2019-03 → 2021-01 | −20.7% | 35.7% | 48.15% | 55.42% | 542 | −10.0% |
+| 2 | 2021-01 → 2022-11 | −19.6% | 26.1% | 47.73% | 50.36% | 507 | −27.1% |
+| 3 | 2022-11 → 2024-09 | −0.9% | 11.0% | 46.74% | 52.17% | 276 | −1.4% |
+| 4 | 2024-09 → 2026-07 | −23.0% | 26.7% | 53.87% | 56.68% | 297 | −43.0% |
+
+**The risk cap did its job.** No fold destroyed the account (was 1 of 4), worst drawdown fell from
+107.7% to 35.7%, and every fold now takes 276–542 trades, so the accuracy figure is measurable in
+all four instead of one fold reporting 100% off a single trade.
+
+**And the model has no directional information.** Pooled over all four folds: **48.83% on 1,622
+trades**. A coin flip on 1,622 samples has a standard error of 1.24 points, so that result sits
+z = −0.94 from 50% — indistinguishable from chance. Four folds spanning seven years and several
+regimes all land in the same place.
+
+Read the "edge −4.53 points" line correctly: it is *not* evidence of an inverted signal to be
+flipped. A coin flip scores 50% while the majority class here is 53.66%, so a model with no
+information automatically shows about −3.7 points. The measurement is "no signal", not
+"backwards signal".
+
+Note also that the agent beats always-BUY in 3 of 4 folds — while always-BUY loses in all 4.
+Beating a losing baseline is not winning.
+
+### Why reshaping TP/SL cannot rescue this
+
+For a driftless price the probability of touching TP before SL is `SL / (TP + SL)`, and the win
+rate needed to break even is *also* `SL / (TP + SL)`. They are equal for every choice of TP and
+SL — the barrier race is zero-expectancy before costs, whatever the knobs say. With TP capped at
+\$3.00 and SL at 2×ATR ≈ \$200 both numbers are 98.5%, which is exactly why `log.txt` shows a 98%
+win rate and still lost the account. `ANALYSIS_REPORT.md` §6 called this ("the TP knob shapes
+risk, not expectancy"); this is that claim confirmed out-of-sample on real data.
+
+So only two things can make this system profitable: directional information beyond the barrier
+probability, and paying less spread than that information is worth. The measured directional
+information is zero. Nothing in the reward function, the network size, the timestep count or a
+fourth ensemble member changes that — those all operate downstream of an input that carries no
+signal.
+
+### `signal_test.py` — ask the cheap question first
+
+```bash
+python ml_bot/signal_test.py --report signal_report.json    # ~1 minute
+python ml_bot/signal_test.py --horizon 5                    # 5-bar direction
+```
+
+Walk-forward logistic regression and gradient boosting on the same 14 features, scaler fitted per
+fold, against three references: the majority class, chance AUC, and a **shuffled-label control**
+that shows how far a model climbs on pure fitting noise (on the synthetic check the control
+reaches 51.3% — so a "51% accurate" model is not a discovery).
+
+It answers in a minute what a PPO run answers in hours, and it isolates direction from position
+sizing. If logistic regression and GBM, given every advantage, cannot beat the floor, the RL agent
+will not either — and the conclusion is to change the inputs, not the algorithm.
+
+### Recommended next step
+
+Run `signal_test.py` on the real data. Then:
+
+* **If AUC is at chance** (the likely outcome given §9), the 14 raw-level features carry no
+  next-day information and no amount of model work will help. Either move to inputs that plausibly
+  do — intraday structure, positioning/COT, real-yield and DXY *changes* rather than levels,
+  session-relative ranges — or accept that daily gold direction is not forecastable with this data
+  and stop here. That is a legitimate result, and a cheaper one than discovering it live.
+* **If AUC clears chance by more than a point** across seeds and horizons, then the RL work has
+  something to stand on, and only then is it worth spending training time on it.
